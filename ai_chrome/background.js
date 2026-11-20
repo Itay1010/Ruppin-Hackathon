@@ -1,50 +1,69 @@
-
-async function askAI(message) {
-    try {
-        const response = await fetch("http://localhost:3001/api/chat", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ message })
-        });
-
-        if (!response.ok) {
-            throw new Error("Failed to connect to AI");
-        }
-
-        const data = await response.json();
-
-        return data.answer;
-
-    } catch (error) {
-        console.error("AI Error:", error);
-        throw error;
-    }
-}
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-
-    if (request.type === "ASK_AI") {
-
-        askAI(request.message)
-            .then(answer => {
-                sendResponse({ answer: answer });
-            })
-            .catch(error => {
-                sendResponse({ error: error.message });
-            });
-
-        return true;
-    }
-});
 /**
  * Background Service Worker for the Mood Blocker Chrome Extension.
- * Seeds default moods on install and redirects tabs visiting blocked domains
- * to `blocked.html` via `chrome.tabs.update(...)`.
+ * Bridges AI site-recommendation requests (`ASK_AI`), seeds default moods on install,
+ * and redirects tabs visiting blocked domains to `blocked.html` via `chrome.tabs.update(...)`.
  */
 
 import { initDefaultMoods, getMoodData } from "./storage.js";
+
+const AI_ENDPOINT = "http://localhost:3001/api/chat";
+
+/**
+ * Sends a user description to the local AI recommendation server and returns
+ * an array of suggested URLs/domains.
+ *
+ * @param {string} message
+ * @returns {Promise<string[]>}
+ */
+async function askAI(message) {
+  let response;
+  try {
+    response = await fetch(AI_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message }),
+    });
+  } catch (error) {
+    console.error("[Mood Blocker] AI connection error:", error);
+    throw new Error(
+      "Cannot reach AI server at http://localhost:3001. Make sure backend/server.js is running."
+    );
+  }
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const serverMsg = data?.error || `AI server returned HTTP ${response.status}`;
+    throw new Error(serverMsg);
+  }
+
+  if (!Array.isArray(data?.answer)) {
+    throw new Error("Unexpected response format from AI server.");
+  }
+
+  return data.answer;
+}
+
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+  if (request?.type === "ASK_AI") {
+    askAI(request.message)
+      .then((answer) => {
+        sendResponse({ answer });
+      })
+      .catch((error) => {
+        sendResponse({ error: error.message || "AI request failed." });
+      });
+
+    return true;
+  }
+});
 
 /**
  * Checks whether a tab URL matches any domain in `blockedSites`.

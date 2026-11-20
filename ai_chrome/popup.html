@@ -129,6 +129,73 @@
           </div>
         </section>
 
+        <section class="card ai-card" aria-label="AI site suggester">
+          <div class="section-header">
+            <h2 class="section-title">AI Site Suggester</h2>
+            <span class="code-badge">EN / עב</span>
+          </div>
+
+          <form id="ai-prompt-form" class="stack-sm" novalidate>
+            <label class="sr-only" for="ai-prompt-input">
+              Describe the websites or distractions you want to block
+            </label>
+            <textarea
+              id="ai-prompt-input"
+              class="textarea"
+              rows="2"
+              maxlength="4000"
+              dir="auto"
+              placeholder="Describe what distracts you (e.g. &quot;I'm a student avoiding social media&quot; or &quot;אני רוצה להתרכז בלי רשתות חברתיות&quot;)"
+            ></textarea>
+            <div class="ai-form-footer">
+              <span class="ai-hint">Review sites before saving</span>
+              <button id="ai-suggest-btn" type="submit" class="btn btn-primary btn-sm">
+                Suggest Sites
+              </button>
+            </div>
+          </form>
+
+          <p id="ai-error" class="form-error" role="alert" hidden></p>
+
+          <div id="ai-suggestions-box" class="ai-suggestions-box" hidden>
+            <div class="ai-suggestions-header">
+              <span id="ai-suggestions-title" class="ai-suggestions-title">
+                Suggested sites
+              </span>
+              <button
+                id="ai-toggle-all-btn"
+                type="button"
+                class="link-btn"
+              >
+                Clear selection
+              </button>
+            </div>
+
+            <ul
+              id="ai-suggestions-list"
+              class="ai-suggestions-list"
+              aria-label="AI suggested websites"
+            ></ul>
+
+            <div class="ai-suggestions-actions">
+              <button
+                id="ai-dismiss-btn"
+                type="button"
+                class="btn btn-subtle btn-sm"
+              >
+                Dismiss
+              </button>
+              <button
+                id="ai-save-btn"
+                type="button"
+                class="btn btn-primary btn-sm"
+              >
+                Block Selected
+              </button>
+            </div>
+          </div>
+        </section>
+
         <section class="card" aria-label="Blocked websites">
           <div class="section-header">
             <h2 class="section-title">Blocked Websites</h2>

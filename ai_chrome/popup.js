@@ -42,10 +42,20 @@ const elements = {
   emptyMoodsState: document.getElementById("empty-moods-state"),
   emptyCreateBtn: document.getElementById("empty-create-btn"),
   restoreDefaultsBtn: document.getElementById("restore-defaults-btn"),
+  aiPromptForm: document.getElementById("ai-prompt-form"),
+  aiPromptInput: document.getElementById("ai-prompt-input"),
+  aiSuggestBtn: document.getElementById("ai-suggest-btn"),
+  aiError: document.getElementById("ai-error"),
+  aiSuggestionsBox: document.getElementById("ai-suggestions-box"),
+  aiSuggestionsTitle: document.getElementById("ai-suggestions-title"),
+  aiToggleAllBtn: document.getElementById("ai-toggle-all-btn"),
+  aiSuggestionsList: document.getElementById("ai-suggestions-list"),
+  aiDismissBtn: document.getElementById("ai-dismiss-btn"),
+  aiSaveBtn: document.getElementById("ai-save-btn"),
   toast: document.getElementById("toast"),
 };
 
-/** @type {{ activeMood: string | null, moods: Record<string, import("../src/storage.js").Mood> }} */
+/** @type {{ activeMood: string | null, moods: Record<string, import("./storage.js").Mood> }} */
 let appState = { activeMood: null, moods: {} };
 /** @type {string | null} */
 let selectedMoodId = null;
@@ -53,6 +63,11 @@ let idManuallyEdited = false;
 let pendingDeleteMoodId = null;
 let deleteConfirmTimeout = null;
 let toastTimeout = null;
+/** @type {string[]} */
+let aiSuggestedDomains = [];
+/** @type {Set<string>} */
+let aiSelectedDomains = new Set();
+let aiRequestInFlight = false;
 
 /**
  * Converts a display name into a clean lowercase slug ID.
@@ -270,6 +285,101 @@ function renderEditor() {
   elements.settingGrayscale.checked = Boolean(settings.grayscale);
   elements.settingHideShorts.checked = Boolean(settings.hideShorts);
   elements.settingTimer.value = String(settings.timerMinutes ?? 25);
+
+  renderAiSuggestions();
+}
+
+/**
+ * Renders the AI-suggested websites checklist for user approval before saving.
+ */
+function renderAiSuggestions() {
+  if (!selectedMoodId || !appState.moods[selectedMoodId] || aiSuggestedDomains.length === 0) {
+    elements.aiSuggestionsBox.hidden = true;
+    elements.aiSuggestionsList.textContent = "";
+    return;
+  }
+
+  const mood = appState.moods[selectedMoodId];
+  const existingSet = new Set(Array.isArray(mood.blockedSites) ? mood.blockedSites : []);
+
+  // Remove any already-blocked domains from the selectable set
+  for (const domain of Array.from(aiSelectedDomains)) {
+    if (existingSet.has(domain)) {
+      aiSelectedDomains.delete(domain);
+    }
+  }
+
+  const selectableDomains = aiSuggestedDomains.filter((d) => !existingSet.has(d));
+  elements.aiSuggestionsBox.hidden = false;
+  elements.aiSuggestionsTitle.textContent = `Suggested sites (${aiSuggestedDomains.length})`;
+  elements.aiSuggestionsList.textContent = "";
+
+  for (const domain of aiSuggestedDomains) {
+    const isExisting = existingSet.has(domain);
+    const li = document.createElement("li");
+    li.className = isExisting
+      ? "ai-suggestion-item is-existing"
+      : "ai-suggestion-item";
+
+    const label = document.createElement("label");
+    label.className = "ai-suggestion-label";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "ai-suggestion-checkbox";
+    checkbox.disabled = isExisting;
+    checkbox.checked = !isExisting && aiSelectedDomains.has(domain);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        aiSelectedDomains.add(domain);
+      } else {
+        aiSelectedDomains.delete(domain);
+      }
+      updateAiSuggestionControls(selectableDomains, mood.name);
+    });
+
+    const domainSpan = document.createElement("span");
+    domainSpan.className = "site-domain";
+    domainSpan.textContent = domain;
+    domainSpan.title = domain;
+
+    label.append(checkbox, domainSpan);
+    li.appendChild(label);
+
+    if (isExisting) {
+      const tag = document.createElement("span");
+      tag.className = "ai-suggestion-tag";
+      tag.textContent = "Already blocked";
+      li.appendChild(tag);
+    }
+
+    elements.aiSuggestionsList.appendChild(li);
+  }
+
+  updateAiSuggestionControls(selectableDomains, mood.name);
+}
+
+/**
+ * Updates the toggle-all link and save button label/disabled state.
+ *
+ * @param {string[]} selectableDomains
+ * @param {string} moodName
+ */
+function updateAiSuggestionControls(selectableDomains, moodName) {
+  const selectedCount = selectableDomains.filter((d) => aiSelectedDomains.has(d)).length;
+
+  elements.aiToggleAllBtn.hidden = selectableDomains.length === 0;
+  elements.aiToggleAllBtn.textContent =
+    selectedCount === selectableDomains.length ? "Clear selection" : "Select all";
+
+  elements.aiSaveBtn.disabled = selectedCount === 0;
+  if (selectableDomains.length === 0) {
+    elements.aiSaveBtn.textContent = `All already in ${moodName}`;
+  } else if (selectedCount === 0) {
+    elements.aiSaveBtn.textContent = "Select sites to block";
+  } else {
+    elements.aiSaveBtn.textContent = `Block ${selectedCount} in ${moodName}`;
+  }
 }
 
 /**
@@ -508,6 +618,147 @@ async function handleRestoreDefaults() {
 }
 
 /**
+ * Clears the current AI suggestion list and inline errors.
+ */
+function clearAiSuggestions() {
+  aiSuggestedDomains = [];
+  aiSelectedDomains.clear();
+  setInlineError(elements.aiError, null);
+  renderAiSuggestions();
+}
+
+/**
+ * Sends the user's description to the background worker (`ASK_AI`) and displays
+ * normalized domain suggestions for user approval.
+ *
+ * @param {SubmitEvent} event
+ */
+async function handleAskAI(event) {
+  event.preventDefault();
+  if (!selectedMoodId || aiRequestInFlight) {
+    return;
+  }
+
+  const promptText = elements.aiPromptInput.value.trim();
+  if (!promptText) {
+    setInlineError(
+      elements.aiError,
+      "Describe the websites or distractions you want to block."
+    );
+    return;
+  }
+
+  setInlineError(elements.aiError, null);
+  aiRequestInFlight = true;
+  elements.aiSuggestBtn.disabled = true;
+  elements.aiSuggestBtn.textContent = "Thinking...";
+  elements.aiPromptInput.disabled = true;
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "ASK_AI",
+      message: promptText,
+    });
+
+    if (!response) {
+      throw new Error("No response from background service worker.");
+    }
+
+    if (response.error) {
+      throw new Error(response.error);
+    }
+
+    const rawList = Array.isArray(response.answer) ? response.answer : [];
+    const normalized = Array.from(
+      new Set(rawList.map((item) => cleanDomain(item)).filter(Boolean))
+    );
+
+    if (normalized.length === 0) {
+      clearAiSuggestions();
+      setInlineError(
+        elements.aiError,
+        "No websites were suggested for that description. Try adding a bit more detail."
+      );
+      return;
+    }
+
+    const existingSites = new Set(
+      appState.moods[selectedMoodId]?.blockedSites ?? []
+    );
+    aiSuggestedDomains = normalized;
+    aiSelectedDomains = new Set(
+      normalized.filter((domain) => !existingSites.has(domain))
+    );
+    renderAiSuggestions();
+  } catch (error) {
+    clearAiSuggestions();
+    setInlineError(
+      elements.aiError,
+      error?.message || "Failed to get AI suggestions."
+    );
+  } finally {
+    aiRequestInFlight = false;
+    elements.aiSuggestBtn.disabled = false;
+    elements.aiSuggestBtn.textContent = "Suggest Sites";
+    elements.aiPromptInput.disabled = false;
+  }
+}
+
+/**
+ * Toggles selecting or clearing all selectable AI-suggested domains.
+ */
+function handleToggleAllAiSuggestions() {
+  if (!selectedMoodId || !appState.moods[selectedMoodId]) {
+    return;
+  }
+
+  const existingSet = new Set(appState.moods[selectedMoodId].blockedSites ?? []);
+  const selectable = aiSuggestedDomains.filter((d) => !existingSet.has(d));
+  const allSelected =
+    selectable.length > 0 && selectable.every((d) => aiSelectedDomains.has(d));
+
+  if (allSelected) {
+    aiSelectedDomains.clear();
+  } else {
+    aiSelectedDomains = new Set(selectable);
+  }
+
+  renderAiSuggestions();
+}
+
+/**
+ * Saves all user-approved AI-suggested domains into the currently selected mood.
+ */
+async function handleSaveAiSuggestions() {
+  if (!selectedMoodId || !appState.moods[selectedMoodId]) {
+    return;
+  }
+
+  const existingSet = new Set(appState.moods[selectedMoodId].blockedSites ?? []);
+  const domainsToAdd = aiSuggestedDomains.filter(
+    (domain) => !existingSet.has(domain) && aiSelectedDomains.has(domain)
+  );
+
+  if (domainsToAdd.length === 0) {
+    return;
+  }
+
+  const moodName = appState.moods[selectedMoodId].name;
+
+  try {
+    await updateMood(selectedMoodId, { addSites: domainsToAdd });
+    elements.aiPromptInput.value = "";
+    clearAiSuggestions();
+    showToast(
+      `Added ${domainsToAdd.length} site${domainsToAdd.length === 1 ? "" : "s"} to "${moodName}"`
+    );
+    await refreshState();
+  } catch (error) {
+    setInlineError(elements.aiError, error.message);
+  }
+}
+
+/**
  * Attaches DOM and Chrome storage listeners, then loads initial state.
  */
 async function bootstrap() {
@@ -519,6 +770,16 @@ async function bootstrap() {
   elements.createForm.addEventListener("submit", handleCreateMood);
   elements.emptyCreateBtn.addEventListener("click", () => toggleCreatePanel(true));
   elements.restoreDefaultsBtn.addEventListener("click", handleRestoreDefaults);
+  elements.aiPromptForm.addEventListener("submit", handleAskAI);
+  elements.aiToggleAllBtn.addEventListener("click", handleToggleAllAiSuggestions);
+  elements.aiDismissBtn.addEventListener("click", clearAiSuggestions);
+  elements.aiSaveBtn.addEventListener("click", handleSaveAiSuggestions);
+
+  elements.aiPromptInput.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      elements.aiPromptForm.requestSubmit();
+    }
+  });
 
   elements.newMoodName.addEventListener("input", () => {
     if (!idManuallyEdited) {
