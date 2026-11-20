@@ -1,14 +1,16 @@
 /**
  * Background Service Worker for the Mood Blocker Chrome Extension.
  * Bridges AI site-recommendation requests (`ASK_AI`), manages Easy-mode
- * per-tab bypasses (`ALLOW_BYPASS`), seeds default moods on install,
- * and redirects tabs visiting blocked domains to `blocked.html`.
+ * per-tab bypasses (`ALLOW_BYPASS`), enforces Focus Timer auto-deactivation
+ * via `chrome.alarms`, seeds default moods on install, and redirects tabs
+ * visiting blocked domains to `blocked.html`.
  */
 
-import { initDefaultMoods, getMoodData } from "./storage.js";
+import { initDefaultMoods, getMoodData, setActiveMood } from "./storage.js";
 
 const AI_ENDPOINT = "http://localhost:3001/api/chat";
 const BYPASS_STORAGE_KEY = "easyModeBypassTabs";
+const TIMER_ALARM_NAME = "moodTimerEnd";
 
 /** In-memory cache of `{ [tabId]: string[] }` for instant bypass checks. */
 let bypassCache = null;
@@ -93,6 +95,36 @@ async function isTabBypassed(tabId, matchedDomain) {
  */
 async function clearAllBypasses() {
   await saveBypassMap({});
+}
+
+/**
+ * Schedules or clears the MV3 alarm that auto-deactivates the active mood when its timer ends.
+ *
+ * @param {string | null} activeMoodId
+ * @param {number | null} timerEndAt
+ */
+async function syncFocusTimerAlarm(activeMoodId, timerEndAt) {
+  if (!chrome.alarms) {
+    return;
+  }
+
+  await chrome.alarms.clear(TIMER_ALARM_NAME);
+
+  if (!activeMoodId || !timerEndAt) {
+    return;
+  }
+
+  if (Date.now() >= timerEndAt) {
+    console.log("[Mood Blocker] Focus timer already elapsed. Deactivating mood.");
+    await setActiveMood(null);
+    return;
+  }
+
+  chrome.alarms.create(TIMER_ALARM_NAME, { when: timerEndAt });
+  const remainingSec = Math.max(1, Math.round((timerEndAt - Date.now()) / 1000));
+  console.log(
+    `[Mood Blocker] Focus timer scheduled for "${activeMoodId}" (${remainingSec}s remaining).`
+  );
 }
 
 /**
@@ -275,22 +307,29 @@ async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
 }
 
 /**
- * Loads the currently active mood from storage.
+ * Loads the currently active mood from storage, auto-deactivating if its focus timer has expired.
  *
- * @returns {Promise<{ activeMoodId: string | null, activeMood: import("./storage.js").Mood | null }>}
+ * @returns {Promise<{ activeMoodId: string | null, activeMood: import("./storage.js").Mood | null, timerEndAt: number | null }>}
  */
 async function getActiveMoodConfig() {
-  const { activeMood, moods } = await getMoodData();
+  const { activeMood, moods, timerEndAt } = await getMoodData();
+
+  if (activeMood && timerEndAt && Date.now() >= timerEndAt) {
+    await setActiveMood(null);
+    return { activeMoodId: null, activeMood: null, timerEndAt: null };
+  }
+
   const currentMood = activeMood && moods ? moods[activeMood] ?? null : null;
-  return { activeMoodId: activeMood, activeMood: currentMood };
+  return { activeMoodId: activeMood, activeMood: currentMood, timerEndAt };
 }
 
 /**
- * Scans all open tabs and immediately redirects any tab matching the active mood's blocklist.
+ * Scans all open tabs, syncs the focus timer alarm, and redirects matching tabs.
  */
 async function enforceBlockOnOpenTabs() {
   try {
-    const { activeMoodId, activeMood } = await getActiveMoodConfig();
+    const { activeMoodId, activeMood, timerEndAt } = await getActiveMoodConfig();
+    await syncFocusTimerAlarm(activeMoodId, timerEndAt);
 
     if (!activeMoodId || !activeMood) {
       await clearAllBypasses();
@@ -308,6 +347,7 @@ async function enforceBlockOnOpenTabs() {
       {
         blockedSites: activeMood.blockedSites,
         settings: activeMood.settings,
+        timerEndAt,
       }
     );
 
@@ -330,7 +370,28 @@ async function enforceBlockOnOpenTabs() {
 }
 
 /**
- * Seed default moods on install and check any open tabs.
+ * Automatically deactivate the active mood when the Focus Timer alarm fires.
+ */
+if (chrome.alarms?.onAlarm) {
+  chrome.alarms.onAlarm.addListener(async (alarm) => {
+    if (alarm.name !== TIMER_ALARM_NAME) {
+      return;
+    }
+
+    try {
+      const { activeMood, timerEndAt } = await getMoodData();
+      if (activeMood && timerEndAt && Date.now() >= timerEndAt - 1000) {
+        console.log("[Mood Blocker] Focus timer finished — deactivating mood.");
+        await setActiveMood(null);
+      }
+    } catch (error) {
+      console.error("[Mood Blocker] Error handling timer alarm:", error);
+    }
+  });
+}
+
+/**
+ * Seed default moods on install and sync timer + open tabs.
  */
 chrome.runtime.onInstalled.addListener(async () => {
   try {
@@ -342,7 +403,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 /**
- * Re-check open tabs when Chrome starts up.
+ * Re-sync timer alarm and open tabs when Chrome starts up.
  */
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
@@ -351,14 +412,14 @@ if (chrome.runtime.onStartup) {
 }
 
 /**
- * React whenever `activeMood` or `moods` changes in `chrome.storage.local`.
+ * React whenever `activeMood`, `moods`, or `timerEndAt` changes in `chrome.storage.local`.
  */
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
   }
 
-  if (!changes.activeMood && !changes.moods) {
+  if (!changes.activeMood && !changes.moods && !changes.timerEndAt) {
     return;
   }
 

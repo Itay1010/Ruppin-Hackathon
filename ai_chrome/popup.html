@@ -261,32 +261,10 @@
               </div>
             </div>
 
-            <label class="setting-row" for="setting-grayscale">
-              <div class="setting-copy">
-                <span class="setting-label">Grayscale mode</span>
-                <span class="setting-desc">Desaturate distracting pages</span>
-              </div>
-              <span class="switch">
-                <input id="setting-grayscale" type="checkbox" />
-                <span class="switch-track" aria-hidden="true"></span>
-              </span>
-            </label>
-
-            <label class="setting-row" for="setting-hide-shorts">
-              <div class="setting-copy">
-                <span class="setting-label">Hide short-form feeds</span>
-                <span class="setting-desc">Filter Shorts, Reels, and vertical feeds</span>
-              </div>
-              <span class="switch">
-                <input id="setting-hide-shorts" type="checkbox" />
-                <span class="switch-track" aria-hidden="true"></span>
-              </span>
-            </label>
-
             <div class="setting-row">
               <label class="setting-copy" for="setting-timer">
                 <span class="setting-label">Focus timer</span>
-                <span class="setting-desc">Session length in minutes</span>
+                <span class="setting-desc">Auto-deactivates blocking (0 = off)</span>
               </label>
               <div class="timer-control">
                 <input
@@ -295,7 +273,7 @@
                   class="input input-timer"
                   min="0"
                   max="480"
-                  step="5"
+                  step="1"
                 />
                 <span class="timer-unit">min</span>
               </div>

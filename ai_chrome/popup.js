@@ -36,8 +36,6 @@ const elements = {
   siteError: document.getElementById("site-error"),
   blockedSitesList: document.getElementById("blocked-sites-list"),
   sitesEmptyState: document.getElementById("sites-empty-state"),
-  settingGrayscale: document.getElementById("setting-grayscale"),
-  settingHideShorts: document.getElementById("setting-hide-shorts"),
   settingTimer: document.getElementById("setting-timer"),
   levelHardBtn: document.getElementById("level-hard-btn"),
   levelEasyBtn: document.getElementById("level-easy-btn"),
@@ -58,14 +56,15 @@ const elements = {
   toast: document.getElementById("toast"),
 };
 
-/** @type {{ activeMood: string | null, moods: Record<string, import("./storage.js").Mood> }} */
-let appState = { activeMood: null, moods: {} };
+/** @type {{ activeMood: string | null, moods: Record<string, import("./storage.js").Mood>, timerEndAt?: number | null }} */
+let appState = { activeMood: null, moods: {}, timerEndAt: null };
 /** @type {string | null} */
 let selectedMoodId = null;
 let idManuallyEdited = false;
 let pendingDeleteMoodId = null;
 let deleteConfirmTimeout = null;
 let toastTimeout = null;
+let countdownInterval = null;
 /** @type {string[]} */
 let aiSuggestedDomains = [];
 /** @type {Set<string>} */
@@ -152,20 +151,72 @@ function reconcileSelection() {
 }
 
 /**
- * Renders the header status indicator and quick deactivate button.
+ * Formats remaining milliseconds as M:SS (or H:MM:SS).
+ *
+ * @param {number} remainingMs
+ * @returns {string}
+ */
+function formatRemaining(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+    : `${minutes}:${pad(seconds)}`;
+}
+
+/**
+ * Stops the live header countdown interval.
+ */
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+}
+
+/**
+ * Renders the header status indicator (with live focus timer countdown) and quick deactivate button.
  */
 function renderHeader() {
+  stopCountdown();
+
   const activeId = appState.activeMood;
   const activeMood = activeId ? appState.moods[activeId] : null;
+  const timerEndAt =
+    typeof appState.timerEndAt === "number" ? appState.timerEndAt : null;
 
-  if (activeMood) {
-    elements.activeStatusText.textContent = `Active: ${activeMood.name}`;
-    elements.activeStatusText.classList.add("is-active");
-    elements.deactivateBtn.hidden = false;
-  } else {
+  if (!activeMood) {
     elements.activeStatusText.textContent = "No active mood";
     elements.activeStatusText.classList.remove("is-active");
     elements.deactivateBtn.hidden = true;
+    return;
+  }
+
+  elements.activeStatusText.classList.add("is-active");
+  elements.deactivateBtn.hidden = false;
+
+  const updateStatusLabel = () => {
+    if (!timerEndAt) {
+      elements.activeStatusText.textContent = `Active: ${activeMood.name}`;
+      return;
+    }
+
+    const remaining = timerEndAt - Date.now();
+    if (remaining <= 0) {
+      stopCountdown();
+      setActiveMood(null).then(() => refreshState());
+      return;
+    }
+
+    elements.activeStatusText.textContent = `Active: ${activeMood.name} · ${formatRemaining(remaining)} left`;
+  };
+
+  updateStatusLabel();
+  if (timerEndAt && timerEndAt > Date.now()) {
+    countdownInterval = setInterval(updateStatusLabel, 1000);
   }
 }
 
@@ -281,8 +332,6 @@ function renderEditor() {
 
   // Render settings
   const settings = mood.settings ?? {
-    grayscale: false,
-    hideShorts: false,
     timerMinutes: 25,
     level: "hard",
   };
@@ -296,8 +345,6 @@ function renderEditor() {
       ? "Hard: blocks link clicks with animation"
       : "Easy: reminder page with option to continue";
 
-  elements.settingGrayscale.checked = Boolean(settings.grayscale);
-  elements.settingHideShorts.checked = Boolean(settings.hideShorts);
   elements.settingTimer.value = String(settings.timerMinutes ?? 25);
 
   renderAiSuggestions();
@@ -815,14 +862,6 @@ async function bootstrap() {
     showToast("Level set to Easy");
   });
 
-  elements.settingGrayscale.addEventListener("change", (event) => {
-    handleSettingsChange({ grayscale: event.target.checked });
-  });
-
-  elements.settingHideShorts.addEventListener("change", (event) => {
-    handleSettingsChange({ hideShorts: event.target.checked });
-  });
-
   elements.settingTimer.addEventListener("change", (event) => {
     const rawValue = Number(event.target.value);
     const clamped = Number.isFinite(rawValue)
@@ -830,11 +869,19 @@ async function bootstrap() {
       : 25;
     event.target.value = String(clamped);
     handleSettingsChange({ timerMinutes: clamped });
+    showToast(
+      clamped > 0
+        ? `Focus timer set to ${clamped} min`
+        : "Auto-timer disabled"
+    );
   });
 
   if (chrome?.storage?.onChanged) {
     chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === "local" && (changes.activeMood || changes.moods)) {
+      if (
+        areaName === "local" &&
+        (changes.activeMood || changes.moods || changes.timerEndAt)
+      ) {
         refreshState();
       }
     });

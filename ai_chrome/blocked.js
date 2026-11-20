@@ -1,7 +1,8 @@
 /**
  * Controller for blocked.html.
  * Supports both Hard mode (strict block) and Easy mode (shows a "Continue anyway"
- * button that requests a per-tab bypass from background.js before navigating).
+ * button that requests a per-tab bypass from background.js before navigating),
+ * and displays a live Focus Timer countdown when active.
  */
 
 const params = new URLSearchParams(window.location.search);
@@ -23,11 +24,69 @@ const easyOverrideBox = document.getElementById("easy-override-box");
 const continueAnywayBtn = document.getElementById("continue-anyway-btn");
 const unblockedBanner = document.getElementById("unblocked-banner");
 
+let liveTimerEndAt = null;
+let countdownInterval = null;
+
 blockedSiteEl.textContent = blockedSite;
 
 if (Number.isFinite(timerMinutes) && timerMinutes > 0) {
-  timerNoteEl.textContent = `Focus timer target: ${timerMinutes} min`;
+  timerNoteEl.textContent = `Focus timer: ${timerMinutes} min`;
   timerNoteEl.hidden = false;
+}
+
+/**
+ * Formats remaining milliseconds as MM:SS (or H:MM:SS).
+ *
+ * @param {number} remainingMs
+ * @returns {string}
+ */
+function formatRemaining(remainingMs) {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${pad(minutes)}:${pad(seconds)}`
+    : `${minutes}:${pad(seconds)}`;
+}
+
+/**
+ * Updates the live countdown readout and refreshes state if the timer expired.
+ */
+function updateCountdownDisplay() {
+  if (!liveTimerEndAt) {
+    return;
+  }
+
+  const remaining = liveTimerEndAt - Date.now();
+  if (remaining <= 0) {
+    stopCountdown();
+    timerNoteEl.hidden = true;
+    syncBlockedState();
+    return;
+  }
+
+  timerNoteEl.textContent = `Blocking ends in ${formatRemaining(remaining)}`;
+  timerNoteEl.hidden = false;
+}
+
+function stopCountdown() {
+  if (countdownInterval) {
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+}
+
+function startCountdown(timerEndAt) {
+  stopCountdown();
+  liveTimerEndAt = timerEndAt;
+  if (!liveTimerEndAt) {
+    timerNoteEl.hidden = true;
+    return;
+  }
+  updateCountdownDisplay();
+  countdownInterval = setInterval(updateCountdownDisplay, 1000);
 }
 
 /**
@@ -113,7 +172,6 @@ continueAnywayBtn.addEventListener("click", async () => {
       return;
     }
 
-    // If mood switched to Hard before clicking, refresh state to reflect Hard mode.
     await syncBlockedState();
   } catch {
     await syncBlockedState();
@@ -124,8 +182,8 @@ continueAnywayBtn.addEventListener("click", async () => {
 });
 
 /**
- * Checks live storage state to reflect whether the site is still blocked
- * and whether the active mood is currently in Hard or Easy mode.
+ * Checks live storage state to reflect whether the site is still blocked,
+ * whether the timer expired, and whether the active mood is in Hard or Easy mode.
  */
 async function syncBlockedState() {
   if (!chrome?.storage?.local) {
@@ -133,17 +191,32 @@ async function syncBlockedState() {
   }
 
   try {
-    const { activeMood, moods } = await chrome.storage.local.get([
+    const { activeMood, moods, timerEndAt } = await chrome.storage.local.get([
       "activeMood",
       "moods",
+      "timerEndAt",
     ]);
-    const currentMood = activeMood && moods ? moods[activeMood] : null;
+
+    const timerExpired =
+      Boolean(activeMood) &&
+      typeof timerEndAt === "number" &&
+      Date.now() >= timerEndAt;
+
+    if (timerExpired) {
+      await chrome.storage.local.set({ activeMood: null, timerEndAt: null });
+    }
+
+    const effectiveActiveMood = timerExpired ? null : activeMood;
+    const currentMood =
+      effectiveActiveMood && moods ? moods[effectiveActiveMood] : null;
     const blockedList = Array.isArray(currentMood?.blockedSites)
       ? currentMood.blockedSites
       : [];
     const stillBlocked = blockedList.includes(blockedSite.toLowerCase());
 
     if (!stillBlocked) {
+      stopCountdown();
+      timerNoteEl.hidden = true;
       moodLabelEl.textContent = "Unblocked";
       headingEl.textContent = "You're free to continue";
       subtitleEl.textContent = "This website is no longer blocked.";
@@ -161,8 +234,15 @@ async function syncBlockedState() {
     continueBtn.hidden = true;
     closeTabBtn.hidden = false;
 
-    const currentLevel = currentMood?.settings?.level === "easy" ? "easy" : "hard";
+    const currentLevel =
+      currentMood?.settings?.level === "easy" ? "easy" : "hard";
     applyLevelUI(currentLevel, currentMood?.name || moodName);
+
+    const validEndAt =
+      typeof timerEndAt === "number" && timerEndAt > Date.now()
+        ? timerEndAt
+        : null;
+    startCountdown(validEndAt);
   } catch {
     // Ignore storage read issues on the interstitial page.
   }
@@ -170,7 +250,10 @@ async function syncBlockedState() {
 
 if (chrome?.storage?.onChanged) {
   chrome.storage.onChanged.addListener((changes, areaName) => {
-    if (areaName === "local" && (changes.activeMood || changes.moods)) {
+    if (
+      areaName === "local" &&
+      (changes.activeMood || changes.moods || changes.timerEndAt)
+    ) {
       syncBlockedState();
     }
   });

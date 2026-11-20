@@ -36,8 +36,6 @@
 
 /** @type {Readonly<MoodSettings>} */
 export const DEFAULT_SETTINGS = Object.freeze({
-  grayscale: false,
-  hideShorts: false,
   timerMinutes: 25,
   level: "hard",
 });
@@ -48,8 +46,6 @@ export const DEFAULT_MOODS = Object.freeze({
     name: "Focus",
     blockedSites: ["youtube.com", "reddit.com", "x.com"],
     settings: {
-      grayscale: false,
-      hideShorts: true,
       timerMinutes: 25,
       level: "hard",
     },
@@ -64,8 +60,6 @@ export const DEFAULT_MOODS = Object.freeze({
       "netflix.com",
     ],
     settings: {
-      grayscale: true,
-      hideShorts: true,
       timerMinutes: 45,
       level: "hard",
     },
@@ -74,15 +68,13 @@ export const DEFAULT_MOODS = Object.freeze({
     name: "Creative",
     blockedSites: ["x.com", "reddit.com", "news.ycombinator.com"],
     settings: {
-      grayscale: false,
-      hideShorts: true,
       timerMinutes: 30,
       level: "hard",
     },
   },
 });
 
-const STORAGE_KEYS = ["activeMood", "moods"];
+const STORAGE_KEYS = ["activeMood", "moods", "timerEndAt"];
 const VALID_LEVELS = new Set(["hard", "easy"]);
 const HTTP_SCHEME_PATTERN = /^https?:\/\//i;
 const HOST_PORT_PATTERN = /^[^:]+:\d+$/;
@@ -122,9 +114,23 @@ function cloneData(value) {
 }
 
 /**
+ * Computes the epoch end timestamp (ms) for a mood's focus timer, or `null` when disabled (0).
+ *
+ * @param {Mood | null | undefined} mood
+ * @returns {number | null}
+ */
+function computeTimerEndAt(mood) {
+  const minutes = Number(mood?.settings?.timerMinutes ?? 0);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return null;
+  }
+  return Date.now() + Math.round(minutes) * 60_000;
+}
+
+/**
  * Reads and normalizes the raw storage state, handling uninitialized or partial storage safely.
  *
- * @returns {Promise<MoodStorageState>}
+ * @returns {Promise<MoodStorageState & { timerEndAt: number | null }>}
  */
 async function readStorageState() {
   const raw = await chrome.storage.local.get(STORAGE_KEYS);
@@ -133,13 +139,16 @@ async function readStorageState() {
     typeof raw?.activeMood === "string" && hasOwn(moods, raw.activeMood)
       ? raw.activeMood
       : null;
+  const timerEndAt =
+    activeMood && typeof raw?.timerEndAt === "number" && Number.isFinite(raw.timerEndAt)
+      ? raw.timerEndAt
+      : null;
 
-  return { activeMood, moods };
+  return { activeMood, moods, timerEndAt };
 }
 
 /**
  * Merges and validates mood settings against a base settings object.
- * Preserves any extra custom setting keys for future extension milestones.
  *
  * @param {Partial<MoodSettings>} incoming
  * @param {MoodSettings} [base=DEFAULT_SETTINGS]
@@ -156,13 +165,8 @@ function mergeSettings(incoming = {}, base = DEFAULT_SETTINGS) {
     ...incoming,
   };
 
-  if (typeof merged.grayscale !== "boolean") {
-    throw new TypeError("settings.grayscale must be a boolean.");
-  }
-
-  if (typeof merged.hideShorts !== "boolean") {
-    throw new TypeError("settings.hideShorts must be a boolean.");
-  }
+  delete merged.hideShorts;
+  delete merged.grayscale;
 
   const timer = Number(merged.timerMinutes);
   if (!Number.isFinite(timer) || timer < 0) {
@@ -448,14 +452,20 @@ export async function updateMood(
   };
 
   state.moods[moodId] = updatedMood;
-  await chrome.storage.local.set({ moods: state.moods });
+  const payload = { moods: state.moods };
+
+  if (moodId === state.activeMood && settings && settings.timerMinutes !== undefined) {
+    payload.timerEndAt = computeTimerEndAt(updatedMood);
+  }
+
+  await chrome.storage.local.set(payload);
 
   return cloneData(updatedMood);
 }
 
 /**
  * Deletes a mood from `chrome.storage.local`.
- * If the deleted mood was currently active, resets `activeMood` to `null`.
+ * If the deleted mood was currently active, resets `activeMood` and `timerEndAt` to `null`.
  *
  * @param {string} moodId - ID of the mood to remove.
  * @returns {Promise<boolean>} `true` if a mood was deleted, `false` if it did not exist.
@@ -472,10 +482,12 @@ export async function deleteMood(moodId) {
   }
 
   delete state.moods[moodId];
-  const nextActiveMood = state.activeMood === moodId ? null : state.activeMood;
+  const wasActive = state.activeMood === moodId;
+  const nextActiveMood = wasActive ? null : state.activeMood;
 
   await chrome.storage.local.set({
     activeMood: nextActiveMood,
+    timerEndAt: wasActive ? null : state.timerEndAt,
     moods: state.moods,
   });
 
@@ -483,7 +495,7 @@ export async function deleteMood(moodId) {
 }
 
 /**
- * Activates a mood by ID or deactivates the current mood when passed `null`.
+ * Activates a mood by ID (starting its focus timer if configured) or deactivates when passed `null`.
  *
  * @param {string | null} moodId - Target mood ID, or `null` to deactivate.
  * @returns {Promise<string | null>} The resulting `activeMood` value.
@@ -491,7 +503,7 @@ export async function deleteMood(moodId) {
  */
 export async function setActiveMood(moodId) {
   if (moodId === null) {
-    await chrome.storage.local.set({ activeMood: null });
+    await chrome.storage.local.set({ activeMood: null, timerEndAt: null });
     return null;
   }
 
@@ -505,6 +517,7 @@ export async function setActiveMood(moodId) {
     throw new Error(`Cannot activate unknown mood "${moodId}".`);
   }
 
-  await chrome.storage.local.set({ activeMood: moodId });
+  const timerEndAt = computeTimerEndAt(state.moods[moodId]);
+  await chrome.storage.local.set({ activeMood: moodId, timerEndAt });
   return moodId;
 }
