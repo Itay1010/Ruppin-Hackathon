@@ -686,3 +686,7 @@ input {
 .toast.is-error {
   background: var(--danger);
 }
+
+[hidden] {
+  display: none !important;
+}
