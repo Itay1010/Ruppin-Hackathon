@@ -7,7 +7,7 @@
     "type": "module"
   },
   "action": {
-    "default_popup": "index.html"
+    "default_popup": "popup.html"
   },
   "permissions": ["storage", "tabs"],
   "host_permissions": ["http://localhost:3001/*"],
