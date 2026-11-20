@@ -6,9 +6,9 @@ canvas.hidden = true;
 
 const sprites = Object.fromEntries(
     Object.entries({
-        peek: "beek.png",
+        peek: "beek2.png",
         half: "half.png",
-        ready: "cop-ready.png",
+        ready: "jump.png",
         going: "cop2.png",
         pulling: "pulling2.png",
         tired: "tired2.png",
