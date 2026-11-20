@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Manage Mood Blocker presets, blocked websites, and focus settings."
+    />
+    <title>Mood Blocker</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">M</div>
+          <div>
+            <h1 class="brand-title">Mood Blocker</h1>
+            <p id="active-status-text" class="brand-status" aria-live="polite">
+              Inactive
+            </p>
+          </div>
+        </div>
+        <button
+          id="deactivate-btn"
+          type="button"
+          class="btn btn-subtle btn-sm"
+          hidden
+        >
+          Deactivate
+        </button>
+      </header>
+
+      <section class="mood-selector-section" aria-label="Moods">
+        <div id="mood-pills" class="mood-pills" role="tablist" aria-label="Available moods"></div>
+      </section>
+
+      <section
+        id="create-mood-panel"
+        class="card create-panel"
+        aria-label="Create new mood"
+        hidden
+      >
+        <div class="section-header">
+          <h2 class="section-title">New Mood</h2>
+          <button
+            id="cancel-create-btn"
+            type="button"
+            class="icon-btn"
+            aria-label="Close new mood form"
+          >
+            &times;
+          </button>
+        </div>
+
+        <form id="create-mood-form" class="stack-sm" novalidate>
+          <div class="field-row">
+            <label class="field" for="new-mood-name">
+              <span class="field-label">Name</span>
+              <input
+                id="new-mood-name"
+                type="text"
+                class="input"
+                placeholder="Deep Work"
+                autocomplete="off"
+                required
+              />
+            </label>
+            <label class="field field-id" for="new-mood-id">
+              <span class="field-label">ID</span>
+              <input
+                id="new-mood-id"
+                type="text"
+                class="input input-mono"
+                placeholder="deep-work"
+                autocomplete="off"
+                required
+              />
+            </label>
+          </div>
+
+          <label class="field" for="new-mood-sites">
+            <span class="field-label">Starter sites (optional, comma-separated)</span>
+            <input
+              id="new-mood-sites"
+              type="text"
+              class="input"
+              placeholder="youtube.com, reddit.com"
+              autocomplete="off"
+            />
+          </label>
+
+          <p id="create-mood-error" class="form-error" role="alert" hidden></p>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-sm">
+              Create Mood
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <main id="mood-editor" class="stack-md" hidden>
+        <section class="card mood-hero" aria-label="Selected mood actions">
+          <div class="mood-hero-info">
+            <div class="mood-heading-row">
+              <h2 id="selected-mood-name" class="mood-name">Focus</h2>
+              <span id="selected-mood-id-badge" class="code-badge">focus</span>
+            </div>
+            <p id="selected-mood-state" class="mood-meta">Not currently active</p>
+          </div>
+          <div class="mood-hero-actions">
+            <button
+              id="toggle-active-btn"
+              type="button"
+              class="btn btn-primary btn-sm"
+            >
+              Activate
+            </button>
+            <button
+              id="delete-mood-btn"
+              type="button"
+              class="btn btn-danger-ghost btn-sm"
+              aria-label="Delete selected mood"
+            >
+              Delete
+            </button>
+          </div>
+        </section>
+
+        <section class="card" aria-label="Blocked websites">
+          <div class="section-header">
+            <h2 class="section-title">Blocked Websites</h2>
+            <span id="site-count-badge" class="count-badge">0</span>
+          </div>
+
+          <form id="add-site-form" class="add-site-form" novalidate>
+            <label class="sr-only" for="site-input">Website URL or domain</label>
+            <input
+              id="site-input"
+              type="text"
+              class="input"
+              placeholder="Add domain or URL (e.g. youtube.com)"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn btn-secondary btn-sm">Add</button>
+          </form>
+
+          <p id="site-error" class="form-error" role="alert" hidden></p>
+
+          <ul id="blocked-sites-list" class="sites-list" aria-label="Blocked domains"></ul>
+          <p id="sites-empty-state" class="empty-inline" hidden>
+            No websites blocked for this mood yet.
+          </p>
+        </section>
+
+        <section class="card" aria-label="Mood settings">
+          <div class="section-header">
+            <h2 class="section-title">Mood Settings</h2>
+          </div>
+
+          <div class="settings-list">
+            <label class="setting-row" for="setting-grayscale">
+              <div class="setting-copy">
+                <span class="setting-label">Grayscale mode</span>
+                <span class="setting-desc">Desaturate distracting pages</span>
+              </div>
+              <span class="switch">
+                <input id="setting-grayscale" type="checkbox" />
+                <span class="switch-track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <label class="setting-row" for="setting-hide-shorts">
+              <div class="setting-copy">
+                <span class="setting-label">Hide short-form feeds</span>
+                <span class="setting-desc">Filter Shorts, Reels, and vertical feeds</span>
+              </div>
+              <span class="switch">
+                <input id="setting-hide-shorts" type="checkbox" />
+                <span class="switch-track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <div class="setting-row">
+              <label class="setting-copy" for="setting-timer">
+                <span class="setting-label">Focus timer</span>
+                <span class="setting-desc">Session length in minutes</span>
+              </label>
+              <div class="timer-control">
+                <input
+                  id="setting-timer"
+                  type="number"
+                  class="input input-timer"
+                  min="0"
+                  max="480"
+                  step="5"
+                />
+                <span class="timer-unit">min</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <section id="empty-moods-state" class="card empty-state" hidden>
+        <p class="empty-state-title">No moods configured</p>
+        <p class="empty-state-copy">
+          Create a custom mood or restore the default Focus, Study, and Creative presets.
+        </p>
+        <div class="empty-state-actions">
+          <button id="empty-create-btn" type="button" class="btn btn-primary btn-sm">
+            Create Mood
+          </button>
+          <button id="restore-defaults-btn" type="button" class="btn btn-secondary btn-sm">
+            Restore Defaults
+          </button>
+        </div>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>
