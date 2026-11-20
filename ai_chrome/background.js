@@ -6,33 +6,84 @@
 
 import { initDefaultMoods, getMoodData } from "./storage.js";
 
-/**
- * Synchronizes active mood state with browser blocking rules.
- *
- * @param {string | null} activeMoodId - Currently active mood ID, or `null` if inactive.
- * @param {import("./storage.js").Mood | null} activeMood - Mood configuration for `activeMoodId`.
- */
-async function syncMoodRules(activeMoodId, activeMood) {
-  if (!activeMoodId || !activeMood) {
-    console.log("[Mood Blocker] No active mood. Blocked sites: []");
-    // TODO: Apply declarativeNetRequest blocking rules here
-    return;
-  }
+const BLOCKED_RESOURCE_TYPES = ["main_frame", "sub_frame"];
 
-  console.log(
-    `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId})`,
-    {
-      blockedSites: activeMood.blockedSites,
-      settings: activeMood.settings,
-    }
+/** Serializes dynamic rule updates to prevent overlapping rule-ID collisions. */
+let syncQueue = Promise.resolve();
+
+function buildBlockingRules(domains) {
+  const uniqueDomains = Array.from(
+    new Set(
+      (Array.isArray(domains) ? domains : [])
+        .map((domain) => (typeof domain === "string" ? domain.trim().toLowerCase() : ""))
+        .filter(Boolean)
+    )
   );
 
-  // TODO: Apply declarativeNetRequest blocking rules here
+  return uniqueDomains.map((domain, index) => ({
+    id: index + 1,
+    priority: 1,
+    action: { type: "block" },
+    condition: {
+      requestDomains: [domain],
+      resourceTypes: BLOCKED_RESOURCE_TYPES,
+    },
+  }));
 }
 
-/**
- * Seed default moods when the extension is installed or updated.
- */
+function syncMoodRules(activeMoodId, activeMood) {
+  syncQueue = syncQueue
+    .then(async () => {
+      if (!chrome.declarativeNetRequest?.updateDynamicRules) {
+        console.warn(
+          '[Mood Blocker] declarativeNetRequest API unavailable. Add "declarativeNetRequest" to manifest.json permissions.'
+        );
+        return;
+      }
+
+      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
+      const removeRuleIds = existingRules.map((rule) => rule.id);
+
+      if (!activeMoodId || !activeMood) {
+        await chrome.declarativeNetRequest.updateDynamicRules({
+          removeRuleIds,
+          addRules: [],
+        });
+        console.log("[Mood Blocker] No active mood. Cleared all blocking rules.");
+        return;
+      }
+
+      const addRules = buildBlockingRules(activeMood.blockedSites);
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds,
+        addRules,
+      });
+
+      console.log(
+        `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId}) — blocking ${addRules.length} domain(s)`,
+        {
+          blockedSites: activeMood.blockedSites,
+          settings: activeMood.settings,
+        }
+      );
+    })
+    .catch((error) => {
+      console.error("[Mood Blocker] Failed to sync blocking rules:", error);
+    });
+
+  return syncQueue;
+}
+
+async function syncFromStorage() {
+  try {
+    const { activeMood, moods } = await getMoodData();
+    const currentMood = activeMood ? moods[activeMood] ?? null : null;
+    await syncMoodRules(activeMood, currentMood);
+  } catch (error) {
+    console.error("[Mood Blocker] Error reading storage state:", error);
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   try {
     const state = await initDefaultMoods();
@@ -40,21 +91,19 @@ chrome.runtime.onInstalled.addListener(async () => {
       ? state.moods[state.activeMood] ?? null
       : null;
 
-    console.log("[Mood Blocker] Storage initialized.", {
-      moods: Object.keys(state.moods),
-      activeMood: state.activeMood,
-    });
-
     await syncMoodRules(state.activeMood, activeMood);
   } catch (error) {
     console.error("[Mood Blocker] Failed to initialize default moods:", error);
   }
 });
 
-/**
- * React whenever `activeMood` or `moods` changes in `chrome.storage.local`.
- */
-chrome.storage.onChanged.addListener(async (changes, areaName) => {
+if (chrome.runtime.onStartup) {
+  chrome.runtime.onStartup.addListener(() => {
+    syncFromStorage();
+  });
+}
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
   }
@@ -63,11 +112,5 @@ chrome.storage.onChanged.addListener(async (changes, areaName) => {
     return;
   }
 
-  try {
-    const { activeMood, moods } = await getMoodData();
-    const currentMood = activeMood ? moods[activeMood] ?? null : null;
-    await syncMoodRules(activeMood, currentMood);
-  } catch (error) {
-    console.error("[Mood Blocker] Error handling storage change:", error);
-  }
+  syncFromStorage();
 });
