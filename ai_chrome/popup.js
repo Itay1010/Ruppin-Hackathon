@@ -11,7 +11,7 @@ import {
   updateMood,
   deleteMood,
   setActiveMood,
-} from "../src/storage.js";
+} from "./storage.js";
 
 const elements = {
   activeStatusText: document.getElementById("active-status-text"),
