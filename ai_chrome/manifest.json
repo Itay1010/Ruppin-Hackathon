@@ -11,6 +11,6 @@
   },
   "permissions": [
     "storage",
-    "declarativeNetRequest"
+    "tabs"
   ]
 }

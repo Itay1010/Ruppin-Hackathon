@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Site Blocked — Mood Blocker</title>
+    <style>
+      :root {
+        --bg: #f6f5f1;
+        --surface: #ffffff;
+        --surface-subtle: #f1efe9;
+        --border: #e4e1d8;
+        --text: #18181b;
+        --text-muted: #62626d;
+        --accent: #0f766e;
+        --accent-hover: #0d625b;
+        --accent-soft: #e6f6f4;
+        --accent-text: #0b5a54;
+        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter,
+          Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          monospace;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--font-sans);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      .card {
+        width: 100%;
+        max-width: 460px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 32px 28px;
+        box-shadow: 0 2px 10px rgba(24, 24, 27, 0.05);
+        text-align: center;
+      }
+
+      .brand-mark {
+        display: inline-grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 11px;
+        background: var(--text);
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 18px;
+        margin-bottom: 18px;
+      }
+
+      .mood-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent-text);
+        font-size: 12.5px;
+        font-weight: 600;
+        margin-bottom: 14px;
+      }
+
+      .mood-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 22px;
+        font-weight: 650;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        margin: 0 0 20px;
+        color: var(--text-muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .domain-pill {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 8px;
+        background: var(--surface-subtle);
+        border: 1px solid var(--border);
+        font-family: var(--font-mono);
+        font-size: 13px;
+        color: var(--text);
+        margin-bottom: 22px;
+      }
+
+      .timer-note {
+        margin: -10px 0 22px;
+        font-size: 12.5px;
+        color: var(--text-muted);
+      }
+
+      .actions {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 36px;
+        padding: 0 16px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        font: inherit;
+        font-size: 13.5px;
+        font-weight: 550;
+        cursor: pointer;
+        transition: background-color 140ms ease, border-color 140ms ease;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-hover);
+      }
+
+      .btn-secondary {
+        background: var(--surface-subtle);
+        border-color: var(--border);
+        color: var(--text);
+      }
+
+      .btn-secondary:hover {
+        background: #e9e6de;
+      }
+
+      .unblocked-banner {
+        margin-top: 18px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: var(--accent-soft);
+        color: var(--accent-text);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand-mark" aria-hidden="true">M</div>
+      <div>
+        <span class="mood-badge">
+          <span class="mood-dot" aria-hidden="true"></span>
+          <span id="mood-label">Mood Active</span>
+        </span>
+      </div>
+
+      <h1>Stay in the zone</h1>
+      <p class="subtitle">
+        This website is blocked while your current mood is active.
+      </p>
+
+      <div id="blocked-site" class="domain-pill">blocked site</div>
+      <p id="timer-note" class="timer-note" hidden></p>
+
+      <div class="actions">
+        <button id="go-back-btn" type="button" class="btn btn-secondary">
+          Go Back
+        </button>
+        <button id="close-tab-btn" type="button" class="btn btn-primary">
+          Close Tab
+        </button>
+        <button id="continue-btn" type="button" class="btn btn-primary" hidden>
+          Continue to site
+        </button>
+      </div>
+
+      <p id="unblocked-banner" class="unblocked-banner" hidden>
+        This site is no longer blocked. You can continue whenever you're ready.
+      </p>
+    </main>
+
+    <script src="./blocked.js"></script>
+  </body>
+</html>

@@ -1,108 +1,171 @@
 /**
  * Background Service Worker for the Mood Blocker Chrome Extension.
- * Seeds default moods on install and reacts to storage changes so blocking
- * rules stay synchronized with the active mood.
+ * Seeds default moods on install and redirects tabs visiting blocked domains
+ * to `blocked.html` via `chrome.tabs.update(...)`.
  */
 
 import { initDefaultMoods, getMoodData } from "./storage.js";
 
-const BLOCKED_RESOURCE_TYPES = ["main_frame", "sub_frame"];
+/**
+ * Checks whether a tab URL matches any domain in `blockedSites`.
+ * Matches exact domains and subdomains (e.g. `youtube.com` matches `www.youtube.com`
+ * and `m.youtube.com`, but not `myyoutube.com`).
+ *
+ * @param {string | undefined} rawUrl
+ * @param {string[]} blockedSites
+ * @returns {string | null} The matched blocked domain, or `null` if allowed.
+ */
+export function findMatchedBlockedSite(rawUrl, blockedSites) {
+  if (typeof rawUrl !== "string" || !rawUrl || !Array.isArray(blockedSites) || blockedSites.length === 0) {
+    return null;
+  }
 
-/** Serializes dynamic rule updates to prevent overlapping rule-ID collisions. */
-let syncQueue = Promise.resolve();
-
-function buildBlockingRules(domains) {
-  const uniqueDomains = Array.from(
-    new Set(
-      (Array.isArray(domains) ? domains : [])
-        .map((domain) => (typeof domain === "string" ? domain.trim().toLowerCase() : ""))
-        .filter(Boolean)
-    )
-  );
-
-  return uniqueDomains.map((domain, index) => ({
-    id: index + 1,
-    priority: 1,
-    action: { type: "block" },
-    condition: {
-      requestDomains: [domain],
-      resourceTypes: BLOCKED_RESOURCE_TYPES,
-    },
-  }));
-}
-
-function syncMoodRules(activeMoodId, activeMood) {
-  syncQueue = syncQueue
-    .then(async () => {
-      if (!chrome.declarativeNetRequest?.updateDynamicRules) {
-        console.warn(
-          '[Mood Blocker] declarativeNetRequest API unavailable. Add "declarativeNetRequest" to manifest.json permissions.'
-        );
-        return;
-      }
-
-      const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-      const removeRuleIds = existingRules.map((rule) => rule.id);
-
-      if (!activeMoodId || !activeMood) {
-        await chrome.declarativeNetRequest.updateDynamicRules({
-          removeRuleIds,
-          addRules: [],
-        });
-        console.log("[Mood Blocker] No active mood. Cleared all blocking rules.");
-        return;
-      }
-
-      const addRules = buildBlockingRules(activeMood.blockedSites);
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds,
-        addRules,
-      });
-
-      console.log(
-        `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId}) — blocking ${addRules.length} domain(s)`,
-        {
-          blockedSites: activeMood.blockedSites,
-          settings: activeMood.settings,
-        }
-      );
-    })
-    .catch((error) => {
-      console.error("[Mood Blocker] Failed to sync blocking rules:", error);
-    });
-
-  return syncQueue;
-}
-
-async function syncFromStorage() {
+  let parsed;
   try {
-    const { activeMood, moods } = await getMoodData();
-    const currentMood = activeMood ? moods[activeMood] ?? null : null;
-    await syncMoodRules(activeMood, currentMood);
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+
+  // Only inspect standard web pages (never redirect chrome:// or chrome-extension:// pages).
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null;
+  }
+
+  const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, "");
+
+  for (const rawDomain of blockedSites) {
+    if (typeof rawDomain !== "string") {
+      continue;
+    }
+    const domain = rawDomain.trim().toLowerCase();
+    if (!domain) {
+      continue;
+    }
+    if (hostname === domain || hostname.endsWith(`.${domain}`)) {
+      return domain;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Builds the extension URL for `blocked.html` with context query parameters.
+ *
+ * @param {string} matchedDomain
+ * @param {import("./storage.js").Mood} activeMood
+ * @param {string} originalUrl
+ * @returns {string}
+ */
+function buildBlockedPageUrl(matchedDomain, activeMood, originalUrl) {
+  const params = new URLSearchParams({
+    site: matchedDomain,
+    mood: activeMood.name || "Focus",
+    timer: String(activeMood.settings?.timerMinutes ?? 0),
+    from: originalUrl,
+  });
+
+  return `${chrome.runtime.getURL("blocked.html")}?${params.toString()}`;
+}
+
+/**
+ * Checks a single tab and redirects it to `blocked.html` if its URL is blocked.
+ *
+ * @param {number} tabId
+ * @param {string | undefined} tabUrl
+ * @param {import("./storage.js").Mood | null} activeMood
+ */
+async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
+  if (!activeMood || typeof tabId !== "number" || !tabUrl) {
+    return;
+  }
+
+  const matchedDomain = findMatchedBlockedSite(tabUrl, activeMood.blockedSites);
+  if (!matchedDomain) {
+    return;
+  }
+
+  const redirectUrl = buildBlockedPageUrl(matchedDomain, activeMood, tabUrl);
+  try {
+    await chrome.tabs.update(tabId, { url: redirectUrl });
   } catch (error) {
-    console.error("[Mood Blocker] Error reading storage state:", error);
+    // Tab may have been closed between detection and redirect.
+    console.debug("[Mood Blocker] Skipped redirect for tab:", tabId, error);
   }
 }
 
+/**
+ * Loads the currently active mood from storage.
+ *
+ * @returns {Promise<{ activeMoodId: string | null, activeMood: import("./storage.js").Mood | null }>}
+ */
+async function getActiveMoodConfig() {
+  const { activeMood, moods } = await getMoodData();
+  const currentMood = activeMood && moods ? moods[activeMood] ?? null : null;
+  return { activeMoodId: activeMood, activeMood: currentMood };
+}
+
+/**
+ * Scans all open tabs and immediately redirects any tab matching the active mood's blocklist.
+ */
+async function enforceBlockOnOpenTabs() {
+  try {
+    const { activeMoodId, activeMood } = await getActiveMoodConfig();
+
+    if (!activeMoodId || !activeMood) {
+      console.log("[Mood Blocker] No active mood. Tab blocking paused.");
+      return;
+    }
+
+    console.log(
+      `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId})`,
+      {
+        blockedSites: activeMood.blockedSites,
+        settings: activeMood.settings,
+      }
+    );
+
+    if (!chrome.tabs?.query) {
+      console.warn('[Mood Blocker] chrome.tabs API unavailable. Add "tabs" to manifest.json permissions.');
+      return;
+    }
+
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(
+      tabs.map((tab) =>
+        enforceBlockOnTab(tab.id, tab.url || tab.pendingUrl, activeMood)
+      )
+    );
+  } catch (error) {
+    console.error("[Mood Blocker] Error enforcing blocks on open tabs:", error);
+  }
+}
+
+/**
+ * Seed default moods on install and check any open tabs.
+ */
 chrome.runtime.onInstalled.addListener(async () => {
   try {
-    const state = await initDefaultMoods();
-    const activeMood = state.activeMood
-      ? state.moods[state.activeMood] ?? null
-      : null;
-
-    await syncMoodRules(state.activeMood, activeMood);
+    await initDefaultMoods();
+    await enforceBlockOnOpenTabs();
   } catch (error) {
     console.error("[Mood Blocker] Failed to initialize default moods:", error);
   }
 });
 
+/**
+ * Re-check open tabs when Chrome starts up.
+ */
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
-    syncFromStorage();
+    enforceBlockOnOpenTabs();
   });
 }
 
+/**
+ * React whenever `activeMood` or `moods` changes in `chrome.storage.local`.
+ */
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") {
     return;
@@ -112,5 +175,43 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
-  syncFromStorage();
+  enforceBlockOnOpenTabs();
 });
+
+/**
+ * Intercept tab URL changes (including SPA navigations like YouTube) and redirect blocked sites.
+ */
+if (chrome.tabs?.onUpdated) {
+  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    const candidateUrl = changeInfo.url || (changeInfo.status === "loading" ? tab?.url : undefined);
+    if (!candidateUrl) {
+      return;
+    }
+
+    try {
+      const { activeMood } = await getActiveMoodConfig();
+      await enforceBlockOnTab(tabId, candidateUrl, activeMood);
+    } catch (error) {
+      console.error("[Mood Blocker] Error checking updated tab:", error);
+    }
+  });
+}
+
+/**
+ * Intercept newly created tabs that already have a target URL.
+ */
+if (chrome.tabs?.onCreated) {
+  chrome.tabs.onCreated.addListener(async (tab) => {
+    const candidateUrl = tab.pendingUrl || tab.url;
+    if (!candidateUrl || typeof tab.id !== "number") {
+      return;
+    }
+
+    try {
+      const { activeMood } = await getActiveMoodConfig();
+      await enforceBlockOnTab(tab.id, candidateUrl, activeMood);
+    } catch (error) {
+      console.error("[Mood Blocker] Error checking new tab:", error);
+    }
+  });
+}
