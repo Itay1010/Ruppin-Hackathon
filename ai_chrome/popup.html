@@ -228,6 +228,39 @@
           </div>
 
           <div class="settings-list">
+            <div class="setting-row setting-row-static">
+              <div class="setting-copy">
+                <span class="setting-label">Blocking level</span>
+                <span id="setting-level-desc" class="setting-desc">
+                  Hard: blocks clicks with animation
+                </span>
+              </div>
+              <div
+                class="segmented-control"
+                role="radiogroup"
+                aria-label="Blocking level"
+              >
+                <button
+                  id="level-hard-btn"
+                  type="button"
+                  role="radio"
+                  aria-checked="true"
+                  class="segment-btn is-active"
+                >
+                  Hard
+                </button>
+                <button
+                  id="level-easy-btn"
+                  type="button"
+                  role="radio"
+                  aria-checked="false"
+                  class="segment-btn"
+                >
+                  Easy
+                </button>
+              </div>
+            </div>
+
             <label class="setting-row" for="setting-grayscale">
               <div class="setting-copy">
                 <span class="setting-label">Grayscale mode</span>

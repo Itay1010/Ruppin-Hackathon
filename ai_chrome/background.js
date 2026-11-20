@@ -1,12 +1,99 @@
 /**
  * Background Service Worker for the Mood Blocker Chrome Extension.
- * Bridges AI site-recommendation requests (`ASK_AI`), seeds default moods on install,
- * and redirects tabs visiting blocked domains to `blocked.html` via `chrome.tabs.update(...)`.
+ * Bridges AI site-recommendation requests (`ASK_AI`), manages Easy-mode
+ * per-tab bypasses (`ALLOW_BYPASS`), seeds default moods on install,
+ * and redirects tabs visiting blocked domains to `blocked.html`.
  */
 
 import { initDefaultMoods, getMoodData } from "./storage.js";
 
 const AI_ENDPOINT = "http://localhost:3001/api/chat";
+const BYPASS_STORAGE_KEY = "easyModeBypassTabs";
+
+/** In-memory cache of `{ [tabId]: string[] }` for instant bypass checks. */
+let bypassCache = null;
+
+/**
+ * Loads per-tab Easy-mode bypasses from `chrome.storage.session` (with in-memory fallback).
+ *
+ * @returns {Promise<Record<string, string[]>>}
+ */
+async function getBypassMap() {
+  if (bypassCache) {
+    return bypassCache;
+  }
+
+  if (chrome.storage?.session?.get) {
+    try {
+      const raw = await chrome.storage.session.get(BYPASS_STORAGE_KEY);
+      if (raw && raw[BYPASS_STORAGE_KEY] && typeof raw[BYPASS_STORAGE_KEY] === "object") {
+        bypassCache = raw[BYPASS_STORAGE_KEY];
+        return bypassCache;
+      }
+    } catch {
+      // Fallback to in-memory map if session storage is unavailable.
+    }
+  }
+
+  bypassCache = {};
+  return bypassCache;
+}
+
+/**
+ * Persists the per-tab Easy-mode bypass map.
+ *
+ * @param {Record<string, string[]>} map
+ */
+async function saveBypassMap(map) {
+  bypassCache = map;
+  if (chrome.storage?.session?.set) {
+    try {
+      await chrome.storage.session.set({ [BYPASS_STORAGE_KEY]: map });
+    } catch {
+      // In-memory cache still holds the latest state.
+    }
+  }
+}
+
+/**
+ * Marks a domain as temporarily allowed in a specific tab (Easy mode only).
+ *
+ * @param {number} tabId
+ * @param {string} domain
+ */
+async function allowBypassForTab(tabId, domain) {
+  const cleanDomain = typeof domain === "string" ? domain.trim().toLowerCase() : "";
+  if (typeof tabId !== "number" || !cleanDomain) {
+    return;
+  }
+
+  const map = await getBypassMap();
+  const key = String(tabId);
+  const existing = new Set(Array.isArray(map[key]) ? map[key] : []);
+  existing.add(cleanDomain);
+  map[key] = Array.from(existing);
+  await saveBypassMap(map);
+}
+
+/**
+ * Checks whether a tab has an active Easy-mode bypass for a matched domain.
+ *
+ * @param {number} tabId
+ * @param {string} matchedDomain
+ * @returns {Promise<boolean>}
+ */
+async function isTabBypassed(tabId, matchedDomain) {
+  const map = await getBypassMap();
+  const allowed = map[String(tabId)];
+  return Array.isArray(allowed) && allowed.includes(matchedDomain.toLowerCase());
+}
+
+/**
+ * Clears all stored Easy-mode bypasses (e.g. when switching to Hard mode or deactivating).
+ */
+async function clearAllBypasses() {
+  await saveBypassMap({});
+}
 
 /**
  * Sends a user description to the local AI recommendation server and returns
@@ -51,7 +138,7 @@ async function askAI(message) {
   return data.answer;
 }
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request?.type === "ASK_AI") {
     askAI(request.message)
       .then((answer) => {
@@ -59,6 +146,27 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       })
       .catch((error) => {
         sendResponse({ error: error.message || "AI request failed." });
+      });
+
+    return true;
+  }
+
+  if (request?.type === "ALLOW_BYPASS") {
+    const tabId = sender?.tab?.id;
+    const domain = request.domain;
+
+    getActiveMoodConfig()
+      .then(async ({ activeMood }) => {
+        const level = activeMood?.settings?.level === "easy" ? "easy" : "hard";
+        if (activeMood && level !== "easy") {
+          sendResponse({ ok: false, error: "Bypass is only allowed in Easy mode." });
+          return;
+        }
+        await allowBypassForTab(tabId, domain);
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error.message || "Bypass failed." });
       });
 
     return true;
@@ -75,7 +183,12 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
  * @returns {string | null} The matched blocked domain, or `null` if allowed.
  */
 export function findMatchedBlockedSite(rawUrl, blockedSites) {
-  if (typeof rawUrl !== "string" || !rawUrl || !Array.isArray(blockedSites) || blockedSites.length === 0) {
+  if (
+    typeof rawUrl !== "string" ||
+    !rawUrl ||
+    !Array.isArray(blockedSites) ||
+    blockedSites.length === 0
+  ) {
     return null;
   }
 
@@ -118,9 +231,11 @@ export function findMatchedBlockedSite(rawUrl, blockedSites) {
  * @returns {string}
  */
 function buildBlockedPageUrl(matchedDomain, activeMood, originalUrl) {
+  const level = activeMood.settings?.level === "easy" ? "easy" : "hard";
   const params = new URLSearchParams({
     site: matchedDomain,
     mood: activeMood.name || "Focus",
+    level,
     timer: String(activeMood.settings?.timerMinutes ?? 0),
     from: originalUrl,
   });
@@ -142,6 +257,11 @@ async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
 
   const matchedDomain = findMatchedBlockedSite(tabUrl, activeMood.blockedSites);
   if (!matchedDomain) {
+    return;
+  }
+
+  const level = activeMood.settings?.level === "easy" ? "easy" : "hard";
+  if (level === "easy" && (await isTabBypassed(tabId, matchedDomain))) {
     return;
   }
 
@@ -173,12 +293,18 @@ async function enforceBlockOnOpenTabs() {
     const { activeMoodId, activeMood } = await getActiveMoodConfig();
 
     if (!activeMoodId || !activeMood) {
+      await clearAllBypasses();
       console.log("[Mood Blocker] No active mood. Tab blocking paused.");
       return;
     }
 
+    const level = activeMood.settings?.level === "easy" ? "easy" : "hard";
+    if (level === "hard") {
+      await clearAllBypasses();
+    }
+
     console.log(
-      `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId})`,
+      `[Mood Blocker] Active mood: "${activeMood.name}" (${activeMoodId}, level: ${level})`,
       {
         blockedSites: activeMood.blockedSites,
         settings: activeMood.settings,
@@ -186,7 +312,9 @@ async function enforceBlockOnOpenTabs() {
     );
 
     if (!chrome.tabs?.query) {
-      console.warn('[Mood Blocker] chrome.tabs API unavailable. Add "tabs" to manifest.json permissions.');
+      console.warn(
+        '[Mood Blocker] chrome.tabs API unavailable. Add "tabs" to manifest.json permissions.'
+      );
       return;
     }
 
@@ -234,15 +362,35 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
+  if (changes.activeMood) {
+    clearAllBypasses().then(() => enforceBlockOnOpenTabs());
+    return;
+  }
+
   enforceBlockOnOpenTabs();
 });
+
+/**
+ * Clean up per-tab Easy-mode bypass entries when a tab is closed.
+ */
+if (chrome.tabs?.onRemoved) {
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
+    const map = await getBypassMap();
+    const key = String(tabId);
+    if (Object.prototype.hasOwnProperty.call(map, key)) {
+      delete map[key];
+      await saveBypassMap(map);
+    }
+  });
+}
 
 /**
  * Intercept tab URL changes (including SPA navigations like YouTube) and redirect blocked sites.
  */
 if (chrome.tabs?.onUpdated) {
   chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    const candidateUrl = changeInfo.url || (changeInfo.status === "loading" ? tab?.url : undefined);
+    const candidateUrl =
+      changeInfo.url || (changeInfo.status === "loading" ? tab?.url : undefined);
     if (!candidateUrl) {
       return;
     }

@@ -39,6 +39,9 @@ const elements = {
   settingGrayscale: document.getElementById("setting-grayscale"),
   settingHideShorts: document.getElementById("setting-hide-shorts"),
   settingTimer: document.getElementById("setting-timer"),
+  levelHardBtn: document.getElementById("level-hard-btn"),
+  levelEasyBtn: document.getElementById("level-easy-btn"),
+  settingLevelDesc: document.getElementById("setting-level-desc"),
   emptyMoodsState: document.getElementById("empty-moods-state"),
   emptyCreateBtn: document.getElementById("empty-create-btn"),
   restoreDefaultsBtn: document.getElementById("restore-defaults-btn"),
@@ -281,7 +284,18 @@ function renderEditor() {
     grayscale: false,
     hideShorts: false,
     timerMinutes: 25,
+    level: "hard",
   };
+  const level = settings.level === "easy" ? "easy" : "hard";
+  elements.levelHardBtn.classList.toggle("is-active", level === "hard");
+  elements.levelHardBtn.setAttribute("aria-checked", String(level === "hard"));
+  elements.levelEasyBtn.classList.toggle("is-active", level === "easy");
+  elements.levelEasyBtn.setAttribute("aria-checked", String(level === "easy"));
+  elements.settingLevelDesc.textContent =
+    level === "hard"
+      ? "Hard: blocks link clicks with animation"
+      : "Easy: reminder page with option to continue";
+
   elements.settingGrayscale.checked = Boolean(settings.grayscale);
   elements.settingHideShorts.checked = Boolean(settings.hideShorts);
   elements.settingTimer.value = String(settings.timerMinutes ?? 25);
@@ -789,6 +803,16 @@ async function bootstrap() {
 
   elements.newMoodId.addEventListener("input", () => {
     idManuallyEdited = elements.newMoodId.value.trim().length > 0;
+  });
+
+  elements.levelHardBtn.addEventListener("click", () => {
+    handleSettingsChange({ level: "hard" });
+    showToast("Level set to Hard");
+  });
+
+  elements.levelEasyBtn.addEventListener("click", () => {
+    handleSettingsChange({ level: "easy" });
+    showToast("Level set to Easy");
   });
 
   elements.settingGrayscale.addEventListener("change", (event) => {

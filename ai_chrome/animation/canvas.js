@@ -19,6 +19,7 @@ const sprites = Object.fromEntries(
 );
 
 let blockedSites = [];
+let blockingLevel = "hard";
 let storageRead = 0;
 let busy = false;
 
@@ -28,7 +29,9 @@ async function refreshBlockedSites() {
         const { activeMood, moods } = await chrome.storage.local.get(["activeMood", "moods"]);
         if (read !== storageRead) return;
 
-        const sites = activeMood && moods?.[activeMood]?.blockedSites;
+        const mood = activeMood && moods ? moods[activeMood] : null;
+        const sites = mood?.blockedSites;
+        blockingLevel = mood?.settings?.level === "easy" ? "easy" : "hard";
         blockedSites = Array.isArray(sites)
             ? sites.filter(site => typeof site === "string").map(site => site.trim().toLowerCase()).filter(Boolean)
             : [];
@@ -50,6 +53,7 @@ if (isExtension) {
 
 function isBlockedLink(link) {
     if (!isExtension) return true;
+    if (blockingLevel !== "hard") return false;
 
     let destination;
     try {
@@ -71,6 +75,10 @@ function showPose(pose) {
 
 document.addEventListener("pointermove", event => {
     if (busy) return;
+    if (isExtension && blockingLevel !== "hard") {
+        canvas.hidden = true;
+        return;
+    }
 
     // Look near the pointer without scanning every link on the page.
     const link = document.elementFromPoint(event.clientX, event.clientY)?.closest("a[href]");
@@ -88,6 +96,8 @@ document.addEventListener("pointermove", event => {
 });
 
 document.addEventListener("click", event => {
+    if (isExtension && blockingLevel !== "hard") return;
+
     const link = event.composedPath().find(node => node instanceof HTMLAnchorElement && node.hasAttribute("href"));
     if (!link || !isBlockedLink(link)) return;
 

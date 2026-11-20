@@ -39,6 +39,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   grayscale: false,
   hideShorts: false,
   timerMinutes: 25,
+  level: "hard",
 });
 
 /** @type {Readonly<Record<string, Mood>>} */
@@ -50,6 +51,7 @@ export const DEFAULT_MOODS = Object.freeze({
       grayscale: false,
       hideShorts: true,
       timerMinutes: 25,
+      level: "hard",
     },
   },
   study: {
@@ -65,6 +67,7 @@ export const DEFAULT_MOODS = Object.freeze({
       grayscale: true,
       hideShorts: true,
       timerMinutes: 45,
+      level: "hard",
     },
   },
   creative: {
@@ -74,11 +77,13 @@ export const DEFAULT_MOODS = Object.freeze({
       grayscale: false,
       hideShorts: true,
       timerMinutes: 30,
+      level: "hard",
     },
   },
 });
 
 const STORAGE_KEYS = ["activeMood", "moods"];
+const VALID_LEVELS = new Set(["hard", "easy"]);
 const HTTP_SCHEME_PATTERN = /^https?:\/\//i;
 const HOST_PORT_PATTERN = /^[^:]+:\d+$/;
 const DNS_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -164,6 +169,12 @@ function mergeSettings(incoming = {}, base = DEFAULT_SETTINGS) {
     throw new TypeError("settings.timerMinutes must be a non-negative number.");
   }
   merged.timerMinutes = Math.round(timer);
+
+  if (merged.level === undefined || merged.level === null) {
+    merged.level = DEFAULT_SETTINGS.level;
+  } else if (typeof merged.level !== "string" || !VALID_LEVELS.has(merged.level)) {
+    throw new TypeError('settings.level must be "hard" or "easy".');
+  }
 
   return merged;
 }
