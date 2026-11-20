@@ -36,6 +36,9 @@ const elements = {
   siteError: document.getElementById("site-error"),
   blockedSitesList: document.getElementById("blocked-sites-list"),
   sitesEmptyState: document.getElementById("sites-empty-state"),
+  settingTimerEnabled: document.getElementById("setting-timer-enabled"),
+  settingTimerDesc: document.getElementById("setting-timer-desc"),
+  timerDurationRow: document.getElementById("timer-duration-row"),
   settingTimer: document.getElementById("setting-timer"),
   levelHardBtn: document.getElementById("level-hard-btn"),
   levelEasyBtn: document.getElementById("level-easy-btn"),
@@ -332,6 +335,7 @@ function renderEditor() {
 
   // Render settings
   const settings = mood.settings ?? {
+    timerEnabled: false,
     timerMinutes: 25,
     level: "hard",
   };
@@ -345,7 +349,17 @@ function renderEditor() {
       ? "Hard: blocks link clicks with animation"
       : "Easy: reminder page with option to continue";
 
-  elements.settingTimer.value = String(settings.timerMinutes ?? 25);
+  const timerEnabled = settings.timerEnabled === true;
+  const timerMinutes =
+    Number.isFinite(Number(settings.timerMinutes)) && Number(settings.timerMinutes) >= 1
+      ? Math.round(Number(settings.timerMinutes))
+      : 25;
+  elements.settingTimerEnabled.checked = timerEnabled;
+  elements.timerDurationRow.hidden = !timerEnabled;
+  elements.settingTimerDesc.textContent = timerEnabled
+    ? `Auto-deactivates after ${timerMinutes} min`
+    : "Off — blocks until you deactivate";
+  elements.settingTimer.value = String(timerMinutes);
 
   renderAiSuggestions();
 }
@@ -862,18 +876,20 @@ async function bootstrap() {
     showToast("Level set to Easy");
   });
 
+  elements.settingTimerEnabled.addEventListener("change", (event) => {
+    const enabled = event.target.checked;
+    handleSettingsChange({ timerEnabled: enabled });
+    showToast(enabled ? "Focus timer enabled" : "Focus timer off");
+  });
+
   elements.settingTimer.addEventListener("change", (event) => {
     const rawValue = Number(event.target.value);
     const clamped = Number.isFinite(rawValue)
-      ? Math.min(480, Math.max(0, Math.round(rawValue)))
+      ? Math.min(480, Math.max(1, Math.round(rawValue)))
       : 25;
     event.target.value = String(clamped);
     handleSettingsChange({ timerMinutes: clamped });
-    showToast(
-      clamped > 0
-        ? `Focus timer set to ${clamped} min`
-        : "Auto-timer disabled"
-    );
+    showToast(`Focus timer set to ${clamped} min`);
   });
 
   if (chrome?.storage?.onChanged) {

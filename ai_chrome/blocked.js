@@ -11,6 +11,7 @@ const moodName = params.get("mood") || "Focus";
 const initialLevel = params.get("level") === "easy" ? "easy" : "hard";
 const timerMinutes = Number(params.get("timer"));
 const originalUrl = params.get("from") || "";
+const fallbackBackUrl = params.get("back") || "";
 
 const moodLabelEl = document.getElementById("mood-label");
 const headingEl = document.getElementById("blocked-heading");
@@ -134,9 +135,26 @@ function applyLevelUI(level, activeMoodName) {
 
 applyLevelUI(initialLevel, moodName);
 
-goBackBtn.addEventListener("click", () => {
-  if (window.history.length > 1) {
-    window.history.back();
+goBackBtn.addEventListener("click", async () => {
+  goBackBtn.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "GO_BACK",
+      fallbackBack: fallbackBackUrl,
+    });
+    if (response?.ok) {
+      return;
+    }
+  } catch {
+    // Fallback below if messaging is unavailable.
+  } finally {
+    goBackBtn.disabled = false;
+  }
+
+  if (isSafeHttpUrl(fallbackBackUrl)) {
+    window.location.replace(fallbackBackUrl);
+  } else if (window.history.length > 2) {
+    window.history.go(-2);
   } else {
     window.close();
   }

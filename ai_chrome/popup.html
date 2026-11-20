@@ -261,17 +261,30 @@
               </div>
             </div>
 
-            <div class="setting-row">
-              <label class="setting-copy" for="setting-timer">
+            <label class="setting-row" for="setting-timer-enabled">
+              <div class="setting-copy">
                 <span class="setting-label">Focus timer</span>
-                <span class="setting-desc">Auto-deactivates blocking (0 = off)</span>
+                <span id="setting-timer-desc" class="setting-desc">
+                  Off — blocks until you deactivate
+                </span>
+              </div>
+              <span class="switch">
+                <input id="setting-timer-enabled" type="checkbox" />
+                <span class="switch-track" aria-hidden="true"></span>
+              </span>
+            </label>
+
+            <div id="timer-duration-row" class="setting-row setting-row-static" hidden>
+              <label class="setting-copy" for="setting-timer">
+                <span class="setting-label">Timer duration</span>
+                <span class="setting-desc">Auto-deactivates blocking when finished</span>
               </label>
               <div class="timer-control">
                 <input
                   id="setting-timer"
                   type="number"
                   class="input input-timer"
-                  min="0"
+                  min="1"
                   max="480"
                   step="1"
                 />

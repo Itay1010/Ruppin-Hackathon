@@ -36,6 +36,7 @@
 
 /** @type {Readonly<MoodSettings>} */
 export const DEFAULT_SETTINGS = Object.freeze({
+  timerEnabled: false,
   timerMinutes: 25,
   level: "hard",
 });
@@ -46,6 +47,7 @@ export const DEFAULT_MOODS = Object.freeze({
     name: "Focus",
     blockedSites: ["youtube.com", "reddit.com", "x.com"],
     settings: {
+      timerEnabled: false,
       timerMinutes: 25,
       level: "hard",
     },
@@ -60,6 +62,7 @@ export const DEFAULT_MOODS = Object.freeze({
       "netflix.com",
     ],
     settings: {
+      timerEnabled: false,
       timerMinutes: 45,
       level: "hard",
     },
@@ -68,6 +71,7 @@ export const DEFAULT_MOODS = Object.freeze({
     name: "Creative",
     blockedSites: ["x.com", "reddit.com", "news.ycombinator.com"],
     settings: {
+      timerEnabled: false,
       timerMinutes: 30,
       level: "hard",
     },
@@ -114,12 +118,16 @@ function cloneData(value) {
 }
 
 /**
- * Computes the epoch end timestamp (ms) for a mood's focus timer, or `null` when disabled (0).
+ * Computes the epoch end timestamp (ms) for a mood's focus timer,
+ * or `null` when `timerEnabled` is false or duration is <= 0.
  *
  * @param {Mood | null | undefined} mood
  * @returns {number | null}
  */
 function computeTimerEndAt(mood) {
+  if (mood?.settings?.timerEnabled !== true) {
+    return null;
+  }
   const minutes = Number(mood?.settings?.timerMinutes ?? 0);
   if (!Number.isFinite(minutes) || minutes <= 0) {
     return null;
@@ -168,11 +176,21 @@ function mergeSettings(incoming = {}, base = DEFAULT_SETTINGS) {
   delete merged.hideShorts;
   delete merged.grayscale;
 
-  const timer = Number(merged.timerMinutes);
-  if (!Number.isFinite(timer) || timer < 0) {
-    throw new TypeError("settings.timerMinutes must be a non-negative number.");
+  if (typeof merged.timerEnabled !== "boolean") {
+    throw new TypeError("settings.timerEnabled must be a boolean.");
   }
-  merged.timerMinutes = Math.round(timer);
+
+  const timer = Number(merged.timerMinutes);
+  if (!Number.isFinite(timer) || timer < 1) {
+    if (timer === 0) {
+      merged.timerMinutes = 25;
+      merged.timerEnabled = false;
+    } else {
+      throw new TypeError("settings.timerMinutes must be a positive number.");
+    }
+  } else {
+    merged.timerMinutes = Math.round(timer);
+  }
 
   if (merged.level === undefined || merged.level === null) {
     merged.level = DEFAULT_SETTINGS.level;
@@ -454,7 +472,11 @@ export async function updateMood(
   state.moods[moodId] = updatedMood;
   const payload = { moods: state.moods };
 
-  if (moodId === state.activeMood && settings && settings.timerMinutes !== undefined) {
+  if (
+    moodId === state.activeMood &&
+    settings &&
+    (settings.timerMinutes !== undefined || settings.timerEnabled !== undefined)
+  ) {
     payload.timerEndAt = computeTimerEndAt(updatedMood);
   }
 

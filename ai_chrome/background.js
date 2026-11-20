@@ -1,60 +1,122 @@
 /**
  * Background Service Worker for the Mood Blocker Chrome Extension.
  * Bridges AI site-recommendation requests (`ASK_AI`), manages Easy-mode
- * per-tab bypasses (`ALLOW_BYPASS`), enforces Focus Timer auto-deactivation
- * via `chrome.alarms`, seeds default moods on install, and redirects tabs
- * visiting blocked domains to `blocked.html`.
+ * per-tab bypasses (`ALLOW_BYPASS`), tracks last safe URLs for reliable
+ * "Go Back" navigation (`GO_BACK`), enforces optional Focus Timer
+ * auto-deactivation via `chrome.alarms`, seeds default moods on install,
+ * and redirects tabs visiting blocked domains to `blocked.html`.
  */
 
 import { initDefaultMoods, getMoodData, setActiveMood } from "./storage.js";
 
 const AI_ENDPOINT = "http://localhost:3001/api/chat";
 const BYPASS_STORAGE_KEY = "easyModeBypassTabs";
+const SAFE_URL_STORAGE_KEY = "lastSafeUrlByTab";
 const TIMER_ALARM_NAME = "moodTimerEnd";
+const FALLBACK_BACK_URL = "chrome://newtab/";
 
-/** In-memory cache of `{ [tabId]: string[] }` for instant bypass checks. */
+/** In-memory caches backed by `chrome.storage.session`. */
 let bypassCache = null;
+let safeUrlCache = null;
 
 /**
- * Loads per-tab Easy-mode bypasses from `chrome.storage.session` (with in-memory fallback).
+ * Loads a session-stored map with in-memory fallback.
  *
- * @returns {Promise<Record<string, string[]>>}
+ * @param {string} key
+ * @returns {Promise<Record<string, any>>}
  */
-async function getBypassMap() {
-  if (bypassCache) {
-    return bypassCache;
-  }
-
+async function readSessionMap(key) {
   if (chrome.storage?.session?.get) {
     try {
-      const raw = await chrome.storage.session.get(BYPASS_STORAGE_KEY);
-      if (raw && raw[BYPASS_STORAGE_KEY] && typeof raw[BYPASS_STORAGE_KEY] === "object") {
-        bypassCache = raw[BYPASS_STORAGE_KEY];
-        return bypassCache;
+      const raw = await chrome.storage.session.get(key);
+      if (raw && raw[key] && typeof raw[key] === "object") {
+        return raw[key];
       }
     } catch {
       // Fallback to in-memory map if session storage is unavailable.
     }
   }
-
-  bypassCache = {};
-  return bypassCache;
+  return {};
 }
 
 /**
- * Persists the per-tab Easy-mode bypass map.
+ * Persists a map to `chrome.storage.session` when available.
  *
- * @param {Record<string, string[]>} map
+ * @param {string} key
+ * @param {Record<string, any>} map
  */
-async function saveBypassMap(map) {
-  bypassCache = map;
+async function writeSessionMap(key, map) {
   if (chrome.storage?.session?.set) {
     try {
-      await chrome.storage.session.set({ [BYPASS_STORAGE_KEY]: map });
+      await chrome.storage.session.set({ [key]: map });
     } catch {
       // In-memory cache still holds the latest state.
     }
   }
+}
+
+async function getBypassMap() {
+  if (!bypassCache) {
+    bypassCache = await readSessionMap(BYPASS_STORAGE_KEY);
+  }
+  return bypassCache;
+}
+
+async function saveBypassMap(map) {
+  bypassCache = map;
+  await writeSessionMap(BYPASS_STORAGE_KEY, map);
+}
+
+async function getSafeUrlMap() {
+  if (!safeUrlCache) {
+    safeUrlCache = await readSessionMap(SAFE_URL_STORAGE_KEY);
+  }
+  return safeUrlCache;
+}
+
+async function saveSafeUrlMap(map) {
+  safeUrlCache = map;
+  await writeSessionMap(SAFE_URL_STORAGE_KEY, map);
+}
+
+/**
+ * Checks whether a URL is a valid non-extension page suitable to record as a "Go Back" target.
+ *
+ * @param {string | undefined} rawUrl
+ * @returns {boolean}
+ */
+function isRecordableBackUrl(rawUrl) {
+  if (typeof rawUrl !== "string" || !rawUrl) {
+    return false;
+  }
+  if (rawUrl.startsWith(chrome.runtime.getURL(""))) {
+    return false;
+  }
+  return (
+    rawUrl.startsWith("http://") ||
+    rawUrl.startsWith("https://") ||
+    rawUrl === "chrome://newtab/" ||
+    rawUrl.startsWith("chrome://newtab")
+  );
+}
+
+/**
+ * Remembers the most recent non-blocked URL visited by a tab so "Go Back" skips the blocked URL.
+ *
+ * @param {number} tabId
+ * @param {string} url
+ */
+async function recordSafeUrl(tabId, url) {
+  if (typeof tabId !== "number" || !isRecordableBackUrl(url)) {
+    return;
+  }
+  const map = await getSafeUrlMap();
+  const key = String(tabId);
+  if (map[key] === url) {
+    return;
+  }
+  map[key] = url;
+  await saveSafeUrlMap(map);
 }
 
 /**
@@ -170,6 +232,41 @@ async function askAI(message) {
   return data.answer;
 }
 
+/**
+ * Navigates a tab from `blocked.html` back to its last safe (non-blocked) URL,
+ * or to Chrome's New Tab page if there is no previous safe URL.
+ *
+ * @param {number | undefined} tabId
+ * @param {string | undefined} fallbackBack
+ */
+async function navigateTabBackSafely(tabId, fallbackBack) {
+  if (typeof tabId !== "number" || !chrome.tabs?.update) {
+    return;
+  }
+
+  const [{ activeMood }, safeMap] = await Promise.all([
+    getActiveMoodConfig(),
+    getSafeUrlMap(),
+  ]);
+
+  const candidates = [safeMap[String(tabId)], fallbackBack];
+  let targetUrl = FALLBACK_BACK_URL;
+
+  for (const candidate of candidates) {
+    if (!isRecordableBackUrl(candidate)) {
+      continue;
+    }
+    const stillBlocked =
+      activeMood && findMatchedBlockedSite(candidate, activeMood.blockedSites);
+    if (!stillBlocked) {
+      targetUrl = candidate;
+      break;
+    }
+  }
+
+  await chrome.tabs.update(tabId, { url: targetUrl });
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request?.type === "ASK_AI") {
     askAI(request.message)
@@ -199,6 +296,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       })
       .catch((error) => {
         sendResponse({ ok: false, error: error.message || "Bypass failed." });
+      });
+
+    return true;
+  }
+
+  if (request?.type === "GO_BACK") {
+    navigateTabBackSafely(sender?.tab?.id, request.fallbackBack)
+      .then(() => {
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error.message || "Could not go back." });
       });
 
     return true;
@@ -260,35 +369,46 @@ export function findMatchedBlockedSite(rawUrl, blockedSites) {
  * @param {string} matchedDomain
  * @param {import("./storage.js").Mood} activeMood
  * @param {string} originalUrl
+ * @param {string | undefined} backUrl
  * @returns {string}
  */
-function buildBlockedPageUrl(matchedDomain, activeMood, originalUrl) {
+function buildBlockedPageUrl(matchedDomain, activeMood, originalUrl, backUrl) {
   const level = activeMood.settings?.level === "easy" ? "easy" : "hard";
+  const timerEnabled = activeMood.settings?.timerEnabled === true;
   const params = new URLSearchParams({
     site: matchedDomain,
     mood: activeMood.name || "Focus",
     level,
-    timer: String(activeMood.settings?.timerMinutes ?? 0),
+    timer: timerEnabled ? String(activeMood.settings?.timerMinutes ?? 0) : "0",
     from: originalUrl,
   });
+
+  if (backUrl && isRecordableBackUrl(backUrl)) {
+    params.set("back", backUrl);
+  }
 
   return `${chrome.runtime.getURL("blocked.html")}?${params.toString()}`;
 }
 
 /**
- * Checks a single tab and redirects it to `blocked.html` if its URL is blocked.
+ * Checks a single tab and redirects it to `blocked.html` if its URL is blocked,
+ * or records it as the tab's last safe URL if allowed.
  *
  * @param {number} tabId
  * @param {string | undefined} tabUrl
  * @param {import("./storage.js").Mood | null} activeMood
  */
 async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
-  if (!activeMood || typeof tabId !== "number" || !tabUrl) {
+  if (typeof tabId !== "number" || !tabUrl) {
     return;
   }
 
-  const matchedDomain = findMatchedBlockedSite(tabUrl, activeMood.blockedSites);
+  const matchedDomain = activeMood
+    ? findMatchedBlockedSite(tabUrl, activeMood.blockedSites)
+    : null;
+
   if (!matchedDomain) {
+    await recordSafeUrl(tabId, tabUrl);
     return;
   }
 
@@ -297,7 +417,15 @@ async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
     return;
   }
 
-  const redirectUrl = buildBlockedPageUrl(matchedDomain, activeMood, tabUrl);
+  const safeMap = await getSafeUrlMap();
+  const backUrl = safeMap[String(tabId)];
+  const redirectUrl = buildBlockedPageUrl(
+    matchedDomain,
+    activeMood,
+    tabUrl,
+    backUrl
+  );
+
   try {
     await chrome.tabs.update(tabId, { url: redirectUrl });
   } catch (error) {
@@ -432,15 +560,21 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 /**
- * Clean up per-tab Easy-mode bypass entries when a tab is closed.
+ * Clean up per-tab session entries when a tab is closed.
  */
 if (chrome.tabs?.onRemoved) {
   chrome.tabs.onRemoved.addListener(async (tabId) => {
-    const map = await getBypassMap();
     const key = String(tabId);
-    if (Object.prototype.hasOwnProperty.call(map, key)) {
-      delete map[key];
-      await saveBypassMap(map);
+    const bypassMap = await getBypassMap();
+    if (Object.prototype.hasOwnProperty.call(bypassMap, key)) {
+      delete bypassMap[key];
+      await saveBypassMap(bypassMap);
+    }
+
+    const safeMap = await getSafeUrlMap();
+    if (Object.prototype.hasOwnProperty.call(safeMap, key)) {
+      delete safeMap[key];
+      await saveSafeUrlMap(safeMap);
     }
   });
 }
