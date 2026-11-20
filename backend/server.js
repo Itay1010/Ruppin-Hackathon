@@ -93,7 +93,7 @@ RECOMMENDATION RULES:
    English: "I want to focus on work"
    -> Suggest distracting websites.
 
-5. Recommend up to 10 real website domains.
+5. Recommend up to 20 real website domains.
 
 6. Never invent domain names.
 

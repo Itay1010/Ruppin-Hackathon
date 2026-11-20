@@ -1,0 +1,34 @@
+.mood-blocker-police {
+    width: 150px;
+    height: 150px;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    z-index: 2147483647;
+    pointer-events: none;
+}
+
+.mood-blocker-police[hidden] {
+    display: none !important;
+}
+
+.mood-blocker-police-jumping {
+    width: 50px;
+    height: 50px;
+}
+
+.mood-blocker-pulled-link {
+    position: fixed;
+    z-index: 2147483646;
+    pointer-events: none;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: white;
+    color: #1c1c1c;
+    font: 14px system-ui, sans-serif;
+    text-decoration: underline;
+}
+
+.mood-blocker-link-in-animation {
+    visibility: hidden !important;
+}

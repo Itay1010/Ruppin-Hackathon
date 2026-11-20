@@ -9,11 +9,26 @@
   "action": {
     "default_popup": "index.html"
   },
-  "permissions": [
-    "storage",
-    "tabs"
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://localhost:3001/*"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["animation/canvas.js"],
+      "css": ["animation/style.css"]
+    }
   ],
-    "host_permissions": [
-        "http://localhost:3001/*"
-    ]
+  "web_accessible_resources": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "resources": [
+        "animation/images/beek.png",
+        "animation/images/half.png",
+        "animation/images/cop-ready.png",
+        "animation/images/cop2.png",
+        "animation/images/pulling2.png",
+        "animation/images/tired2.png"
+      ]
+    }
+  ]
 }
