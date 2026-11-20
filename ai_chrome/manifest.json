@@ -31,6 +31,7 @@
         "animation/images/cop-ready.png",
         "animation/images/cop2.png",
         "animation/images/pulling2.png",
+        "animation/images/**",
         "animation/images/tired2.png"
       ]
     }
