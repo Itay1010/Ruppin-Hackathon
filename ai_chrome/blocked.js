@@ -160,7 +160,15 @@ goBackBtn.addEventListener("click", async () => {
   }
 });
 
-closeTabBtn.addEventListener("click", () => {
+closeTabBtn.addEventListener("click", async () => {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "CLOSE_TAB" });
+    if (response?.ok) {
+      return;
+    }
+  } catch {
+    // Fallback below if messaging is unavailable.
+  }
   window.close();
 });
 

@@ -233,7 +233,7 @@ function renderMoodPills() {
   for (const [id, mood] of moodEntries) {
     const button = document.createElement("button");
     button.type = "button";
-    button.role = "tab";
+    button.setAttribute("role", "tab");
     button.className = "mood-pill";
     button.dataset.moodId = id;
     button.setAttribute("aria-selected", String(id === selectedMoodId));

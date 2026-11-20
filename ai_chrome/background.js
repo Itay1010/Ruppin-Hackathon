@@ -1,19 +1,24 @@
 /**
- * Background Service Worker for the Mood Blocker Chrome Extension.
- * Bridges AI site-recommendation requests (`ASK_AI`), manages Easy-mode
- * per-tab bypasses (`ALLOW_BYPASS`), tracks last safe URLs for reliable
- * "Go Back" navigation (`GO_BACK`), enforces optional Focus Timer
- * auto-deactivation via `chrome.alarms`, seeds default moods on install,
- * and redirects tabs visiting blocked domains to `blocked.html`.
+ * Background Service Worker for the Mood Blocker Extension (Universal Chromium MV3).
+ * Compatible with Chrome, Microsoft Edge, Brave, Opera, Vivaldi, and Arc.
+ *
+ * Responsibilities:
+ * - Bridges AI site-recommendation requests (`ASK_AI`) with localhost/127.0.0.1 fallback.
+ * - Manages Easy-mode per-tab bypasses (`ALLOW_BYPASS`).
+ * - Tracks last safe HTTP(S) URLs for browser-agnostic "Go Back" (`GO_BACK`) and "Close Tab" (`CLOSE_TAB`).
+ * - Enforces optional Focus Timer auto-deactivation via `chrome.alarms`.
+ * - Redirects tabs visiting blocked domains to `blocked.html` (including prerendered & redirected tabs).
  */
 
 import { initDefaultMoods, getMoodData, setActiveMood } from "./storage.js";
 
-const AI_ENDPOINT = "http://localhost:3001/api/chat";
+const AI_ENDPOINTS = [
+  "http://localhost:3001/api/chat",
+  "http://127.0.0.1:3001/api/chat",
+];
 const BYPASS_STORAGE_KEY = "easyModeBypassTabs";
 const SAFE_URL_STORAGE_KEY = "lastSafeUrlByTab";
 const TIMER_ALARM_NAME = "moodTimerEnd";
-const FALLBACK_BACK_URL = "chrome://newtab/";
 
 /** In-memory caches backed by `chrome.storage.session`. */
 let bypassCache = null;
@@ -80,7 +85,8 @@ async function saveSafeUrlMap(map) {
 }
 
 /**
- * Checks whether a URL is a valid non-extension page suitable to record as a "Go Back" target.
+ * Checks whether a URL is a standard web page suitable as a cross-browser "Go Back" target.
+ * Avoids browser-specific internal schemes (`chrome://`, `edge://`, `brave://`, `opera://`).
  *
  * @param {string | undefined} rawUrl
  * @returns {boolean}
@@ -92,16 +98,16 @@ function isRecordableBackUrl(rawUrl) {
   if (rawUrl.startsWith(chrome.runtime.getURL(""))) {
     return false;
   }
-  return (
-    rawUrl.startsWith("http://") ||
-    rawUrl.startsWith("https://") ||
-    rawUrl === "chrome://newtab/" ||
-    rawUrl.startsWith("chrome://newtab")
-  );
+  try {
+    const parsed = new URL(rawUrl);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Remembers the most recent non-blocked URL visited by a tab so "Go Back" skips the blocked URL.
+ * Remembers the most recent non-blocked HTTP(S) URL visited by a tab so "Go Back" skips the blocked URL.
  *
  * @param {number} tabId
  * @param {string} url
@@ -191,23 +197,33 @@ async function syncFocusTimerAlarm(activeMoodId, timerEndAt) {
 
 /**
  * Sends a user description to the local AI recommendation server and returns
- * an array of suggested URLs/domains.
+ * an array of suggested URLs/domains. Tries `localhost` then `127.0.0.1` for
+ * maximum compatibility across Chromium browsers.
  *
  * @param {string} message
  * @returns {Promise<string[]>}
  */
 async function askAI(message) {
-  let response;
-  try {
-    response = await fetch(AI_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ message }),
-    });
-  } catch (error) {
-    console.error("[Mood Blocker] AI connection error:", error);
+  let response = null;
+  let lastNetworkError = null;
+
+  for (const endpoint of AI_ENDPOINTS) {
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message }),
+      });
+      break;
+    } catch (error) {
+      lastNetworkError = error;
+    }
+  }
+
+  if (!response) {
+    console.error("[Mood Blocker] AI connection error:", lastNetworkError);
     throw new Error(
       "Cannot reach AI server at http://localhost:3001. Make sure backend/server.js is running."
     );
@@ -233,13 +249,15 @@ async function askAI(message) {
 }
 
 /**
- * Navigates a tab from `blocked.html` back to its last safe (non-blocked) URL,
- * or to Chrome's New Tab page if there is no previous safe URL.
+ * Navigates a tab from `blocked.html` back to its last safe (non-blocked) URL.
+ * If no prior safe HTTP(S) URL exists, opens the browser's native New Tab page
+ * (works universally on Chrome, Edge, Brave, Opera, Vivaldi, and Arc) and closes the blocked tab.
  *
- * @param {number | undefined} tabId
+ * @param {chrome.tabs.Tab | undefined} senderTab
  * @param {string | undefined} fallbackBack
  */
-async function navigateTabBackSafely(tabId, fallbackBack) {
+async function navigateTabBackSafely(senderTab, fallbackBack) {
+  const tabId = senderTab?.id;
   if (typeof tabId !== "number" || !chrome.tabs?.update) {
     return;
   }
@@ -250,7 +268,6 @@ async function navigateTabBackSafely(tabId, fallbackBack) {
   ]);
 
   const candidates = [safeMap[String(tabId)], fallbackBack];
-  let targetUrl = FALLBACK_BACK_URL;
 
   for (const candidate of candidates) {
     if (!isRecordableBackUrl(candidate)) {
@@ -259,12 +276,26 @@ async function navigateTabBackSafely(tabId, fallbackBack) {
     const stillBlocked =
       activeMood && findMatchedBlockedSite(candidate, activeMood.blockedSites);
     if (!stillBlocked) {
-      targetUrl = candidate;
-      break;
+      await chrome.tabs.update(tabId, { url: candidate });
+      return;
     }
   }
 
-  await chrome.tabs.update(tabId, { url: targetUrl });
+  // No safe HTTP(S) page to return to: open the browser's own native New Tab page.
+  if (chrome.tabs?.create && chrome.tabs?.remove) {
+    const createProps = { active: true };
+    if (typeof senderTab?.windowId === "number") {
+      createProps.windowId = senderTab.windowId;
+    }
+    if (typeof senderTab?.index === "number") {
+      createProps.index = senderTab.index;
+    }
+    await chrome.tabs.create(createProps);
+    await chrome.tabs.remove(tabId);
+    return;
+  }
+
+  await chrome.tabs.update(tabId, { url: "about:blank" });
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -302,7 +333,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request?.type === "GO_BACK") {
-    navigateTabBackSafely(sender?.tab?.id, request.fallbackBack)
+    navigateTabBackSafely(sender?.tab, request.fallbackBack)
       .then(() => {
         sendResponse({ ok: true });
       })
@@ -311,6 +342,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
 
     return true;
+  }
+
+  if (request?.type === "CLOSE_TAB") {
+    const tabId = sender?.tab?.id;
+    if (typeof tabId === "number" && chrome.tabs?.remove) {
+      chrome.tabs
+        .remove(tabId)
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+    }
+    sendResponse({ ok: false });
   }
 });
 
@@ -340,7 +383,7 @@ export function findMatchedBlockedSite(rawUrl, blockedSites) {
     return null;
   }
 
-  // Only inspect standard web pages (never redirect chrome:// or chrome-extension:// pages).
+  // Only inspect standard web pages (never redirect internal browser or extension pages).
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return null;
   }
@@ -429,7 +472,7 @@ async function enforceBlockOnTab(tabId, tabUrl, activeMood) {
   try {
     await chrome.tabs.update(tabId, { url: redirectUrl });
   } catch (error) {
-    // Tab may have been closed between detection and redirect.
+    // Tab may have been closed or replaced between detection and redirect.
     console.debug("[Mood Blocker] Skipped redirect for tab:", tabId, error);
   }
 }
@@ -489,11 +532,34 @@ async function enforceBlockOnOpenTabs() {
     const tabs = await chrome.tabs.query({});
     await Promise.all(
       tabs.map((tab) =>
-        enforceBlockOnTab(tab.id, tab.url || tab.pendingUrl, activeMood)
+        enforceBlockOnTab(tab.id, tab.pendingUrl || tab.url, activeMood)
       )
     );
   } catch (error) {
     console.error("[Mood Blocker] Error enforcing blocks on open tabs:", error);
+  }
+}
+
+/**
+ * Helper that fetches a tab by ID and enforces blocking on its current URL.
+ *
+ * @param {number} tabId
+ */
+async function checkTabById(tabId) {
+  if (typeof tabId !== "number" || !chrome.tabs?.get) {
+    return;
+  }
+  try {
+    const [tab, { activeMood }] = await Promise.all([
+      chrome.tabs.get(tabId),
+      getActiveMoodConfig(),
+    ]);
+    const candidateUrl = tab?.pendingUrl || tab?.url;
+    if (candidateUrl) {
+      await enforceBlockOnTab(tabId, candidateUrl, activeMood);
+    }
+  } catch {
+    // Tab may no longer exist.
   }
 }
 
@@ -531,7 +597,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 /**
- * Re-sync timer alarm and open tabs when Chrome starts up.
+ * Re-sync timer alarm and open tabs when the browser starts up.
  */
 if (chrome.runtime.onStartup) {
   chrome.runtime.onStartup.addListener(() => {
@@ -580,12 +646,19 @@ if (chrome.tabs?.onRemoved) {
 }
 
 /**
- * Intercept tab URL changes (including SPA navigations like YouTube) and redirect blocked sites.
+ * Intercept tab URL changes, redirects, and page loads (including SPA navigations).
  */
 if (chrome.tabs?.onUpdated) {
   chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    const candidateUrl =
-      changeInfo.url || (changeInfo.status === "loading" ? tab?.url : undefined);
+    const shouldInspect =
+      Boolean(changeInfo.url) ||
+      changeInfo.status === "loading" ||
+      changeInfo.status === "complete";
+    if (!shouldInspect) {
+      return;
+    }
+
+    const candidateUrl = changeInfo.url || tab?.pendingUrl || tab?.url;
     if (!candidateUrl) {
       return;
     }
@@ -615,5 +688,23 @@ if (chrome.tabs?.onCreated) {
     } catch (error) {
       console.error("[Mood Blocker] Error checking new tab:", error);
     }
+  });
+}
+
+/**
+ * Catch prerendered/instant-swapped tabs (common in Edge, Brave, and Chrome).
+ */
+if (chrome.tabs?.onReplaced) {
+  chrome.tabs.onReplaced.addListener((addedTabId) => {
+    checkTabById(addedTabId);
+  });
+}
+
+/**
+ * Catch tabs restored or switched to across windows/workspaces (Edge/Brave/Opera/Vivaldi).
+ */
+if (chrome.tabs?.onActivated) {
+  chrome.tabs.onActivated.addListener(({ tabId }) => {
+    checkTabById(tabId);
   });
 }

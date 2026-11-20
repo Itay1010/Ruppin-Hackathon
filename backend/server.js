@@ -6,6 +6,17 @@ const app = express();
 
 app.use(express.json());
 
+// Allow requests from all Chromium extension origins (Chrome, Edge, Brave, Opera, Vivaldi).
+app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") {
+        return res.sendStatus(204);
+    }
+    next();
+});
+
 app.post("/api/chat", async (req, res) => {
     try {
         const { message } = req.body;
